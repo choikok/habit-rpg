@@ -14,6 +14,21 @@ python3 -m http.server 8080
 브라우저에서 `http://localhost:8080` 을 엽니다.
 주소 끝에 `?debug` 를 붙이면 설정 화면에 시험용 시계(+1시간, +1일)가 나옵니다.
 
+## 배포된 주소
+
+https://choikok.github.io/habit-rpg/
+
+GitHub Pages가 `gh-pages` 브랜치를 그대로 내보냅니다. 고친 내용을 사이트에 반영하려면
+`main`에 올린 뒤 같은 커밋을 `gh-pages`에도 올려야 합니다.
+
+```bash
+git push origin main
+```
+
+```bash
+git push origin main:gh-pages
+```
+
 ## 휴대폰에 설치
 
 홈 화면 설치와 오프라인 동작은 HTTPS 주소에서만 됩니다.
