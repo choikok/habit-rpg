@@ -64,7 +64,7 @@ function readCompletion(c, i) {
   if (!optInt(c.hp, -HP_MAX, HP_MAX) || !optInt(c.equipCarry, 0, BIG) || !optInt(c.equipXp, 0, BIG)) fail(where);
   if (!optInt(c.tickets, 0, 100)) fail(where);
   const rec = { id: c.id, day: c.day, habitId: c.habitId, at: Number.isFinite(c.at) ? c.at : 0, xp: c.xp, gold: c.gold };
-  for (const key of ['hp', 'equipCarry', 'equipXp', 'tickets']) if (c[key] !== undefined) rec[key] = c[key];
+  for (const key of ['hp', 'equipCarry', 'equipXp']) if (c[key] !== undefined) rec[key] = c[key];
   return rec;
 }
 
@@ -77,9 +77,10 @@ function readDay(d, i) {
     perfect = { xp: d.perfect.xp, gold: d.perfect.gold };
   }
   if (!optInt(d.total, 0, BIG) || !optInt(d.done, 0, BIG) || !optInt(d.hpLoss, 0, HP_MAX)) fail(where);
+  if (!optInt(d.battles, 0, 10000)) fail(where);
   const rec = { day: d.day, perfect };
   if (d.rest) rec.rest = true;
-  for (const key of ['total', 'done', 'hpLoss']) if (d[key] !== undefined) rec[key] = d[key];
+  for (const key of ['total', 'done', 'hpLoss', 'battles']) if (d[key] !== undefined) rec[key] = d[key];
   return rec;
 }
 
@@ -126,9 +127,11 @@ export function importData(text) {
   if (data.battle !== undefined) {
     // 전투가 생기기 전(1 버전)에 만든 백업에는 이 항목이 없다. 그때는 기본값으로 시작한다.
     const b = data.battle;
-    if (!isObj(b) || !isInt(b.cleared, 0, BIG) || !isInt(b.tickets, -BIG, BIG)) fail('전투');
+    if (!isObj(b) || !isInt(b.cleared, 0, BIG)) fail('전투');
     if (!isInt(b.wins, 0, BIG) || !isInt(b.losses, 0, BIG)) fail('전투');
-    state.battle = { cleared: b.cleared, tickets: b.tickets, wins: b.wins, losses: b.losses };
+    // 예전 백업에 있던 tickets 는 검사만 하고 버린다 (전투 기회는 이제 하루 단위로 다시 센다)
+    if (b.tickets !== undefined && !isInt(b.tickets, -BIG, BIG)) fail('전투');
+    state.battle = { cleared: b.cleared, wins: b.wins, losses: b.losses };
   }
 
   for (const [key, max] of [['habits', 1000], ['completions', 1000000], ['days', 100000]]) {

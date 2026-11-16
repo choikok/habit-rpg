@@ -190,57 +190,105 @@ test('균형: 보스마다 다음 단계 장비가 필요하다', () => {
   assert.ok(B.simulate(G.battleStats(hero(15, full(3))), B.monsterFor(19), B.seededRng(1)).t <= 20000);
 });
 
-test('전투 기회: 처음 3번, 습관 하나 완료할 때마다 +1, 완벽한 하루 +1', () => {
-  const state = hero();
+/** 습관 3개(쉬움)를 만든 캐릭터 */
+function withHabits(level = 3) {
+  const state = hero(level);
   const ids = ['물 마시기', '산책', '책 읽기'].map((name, i) =>
     G.addHabit(state, { name, difficulty: 'easy', category: 'life' }, NOV(16, 8, i)).id);
-  assert.equal(state.battle.tickets, 3);
+  return { state, ids };
+}
+const left = (state, d = 16) => G.battleChances(state, `2026-11-${d}`).left;
+
+test('오늘 전투 기회 = 오늘 완료한 습관 수 + 완벽한 하루 1 − 오늘 싸운 횟수', () => {
+  const { state, ids } = withHabits();
+  assert.deepEqual(G.battleChances(state, '2026-11-16'), { done: 0, perfect: 0, earned: 0, used: 0, left: 0 });
+  assert.deepEqual(G.beginBattle(state, NOV(16)), { ok: false, reason: 'no-chance' }); // 아무것도 안 했으면 싸울 수 없다
   G.checkHabit(state, ids[0], NOV(16));
   G.checkHabit(state, ids[1], NOV(16));
-  assert.equal(state.battle.tickets, 5);
+  assert.equal(left(state), 2);
   G.checkHabit(state, ids[2], NOV(16)); // 마지막: +1, 완벽한 하루 +1
-  assert.equal(state.battle.tickets, 7);
-  G.uncheckHabit(state, ids[2], NOV(16)); // 취소하면 둘 다 되돌아간다
-  assert.equal(state.battle.tickets, 5);
-  G.uncheckHabit(state, ids[0], NOV(16));
-  assert.equal(state.battle.tickets, 4);
+  assert.deepEqual(G.battleChances(state, '2026-11-16'), { done: 3, perfect: 1, earned: 4, used: 0, left: 4 });
+  for (let i = 0; i < 4; i++) assert.equal(G.beginBattle(state, NOV(16)).ok, true);
+  assert.deepEqual(G.battleChances(state, '2026-11-16'), { done: 3, perfect: 1, earned: 4, used: 4, left: 0 });
+  assert.equal(G.beginBattle(state, NOV(16)).ok, false);
 });
 
-test('전투 시작은 기회 1번을 쓰고, 기회가 없으면 시작할 수 없다', () => {
-  const state = hero();
-  for (let i = 0; i < 3; i++) {
-    const start = G.beginBattle(state);
-    assert.equal(start.ok, true);
-    assert.equal(start.stage, 1);
-    assert.equal(start.monster.name, '말랑 젤리');
+test('체크 → 전투 → 해제 → 다시 체크를 반복해도 습관 1개당 전투는 1번뿐이다', () => {
+  const { state, ids } = withHabits();
+  G.checkHabit(state, ids[0], NOV(16));
+  let fights = 0;
+  for (let i = 0; i < 10; i++) {
+    const start = G.beginBattle(state, NOV(16));
+    if (start.ok) {
+      fights++;
+      G.finishBattle(state, start.stage, true);
+    }
+    G.uncheckHabit(state, ids[0], NOV(16));
+    assert.equal(left(state), 0); // 싸운 뒤 해제하면 0 (음수로 보이지 않는다)
+    G.checkHabit(state, ids[0], NOV(16));
+    assert.equal(left(state), 0); // 다시 체크해도 이미 쓴 기회는 돌아오지 않는다
   }
-  assert.equal(state.battle.tickets, 0);
-  assert.deepEqual(G.beginBattle(state), { ok: false, reason: 'no-ticket' });
-  assert.equal(state.battle.tickets, 0);
+  assert.equal(fights, 1);
+  assert.equal(state.player.gold, 2 + 3); // 습관 골드 2 + 전투 1번 3
+  // 완벽한 하루도 마찬가지: 마지막 습관을 해제·체크해도 기회가 늘지 않는다
+  G.checkHabit(state, ids[1], NOV(16));
+  G.checkHabit(state, ids[2], NOV(16));
+  assert.equal(left(state), 3); // 완료 3 + 완벽 1 − 사용 1
+  for (let i = 0; i < 3; i++) G.beginBattle(state, NOV(16));
+  for (let i = 0; i < 5; i++) {
+    G.uncheckHabit(state, ids[2], NOV(16));
+    G.checkHabit(state, ids[2], NOV(16));
+  }
+  assert.equal(left(state), 0);
+  assert.equal(state.days['2026-11-16'].battles, 4);
 });
 
-test('체크로 얻은 기회를 쓴 뒤 그 체크를 취소하면 기회가 음수가 되어 다시 채워야 한다', () => {
-  const state = hero();
-  const id = G.addHabit(state, { name: '산책', difficulty: 'easy', category: 'life' }, NOV(16, 8)).id;
-  G.addHabit(state, { name: '안 함', difficulty: 'easy', category: 'life' }, NOV(16, 8, 1));
-  state.battle.tickets = 0;
-  G.checkHabit(state, id, NOV(16));
-  assert.equal(G.beginBattle(state).ok, true);
-  G.uncheckHabit(state, id, NOV(16));
-  assert.equal(state.battle.tickets, -1);
-  assert.equal(G.beginBattle(state).ok, false);
-  G.checkHabit(state, id, NOV(16));
-  assert.equal(state.battle.tickets, 0);
+test('싸우기 전에 해제하면 그만큼 기회가 줄고, 다시 체크하면 원래대로 돌아온다', () => {
+  const { state, ids } = withHabits();
+  G.checkHabit(state, ids[0], NOV(16));
+  G.checkHabit(state, ids[1], NOV(16));
+  assert.equal(left(state), 2);
+  G.uncheckHabit(state, ids[1], NOV(16));
+  assert.equal(left(state), 1);
+  G.checkHabit(state, ids[1], NOV(16));
+  assert.equal(left(state), 2);
+});
+
+test('남은 기회는 다음 날로 넘어가지 않고, 새 날은 0에서 시작한다', () => {
+  const { state, ids } = withHabits();
+  G.checkHabit(state, ids[0], NOV(16));
+  G.checkHabit(state, ids[1], NOV(16));
+  assert.equal(left(state, 16), 2);
+  G.processRollover(state, NOV(17));
+  assert.equal(left(state, 17), 0);
+  assert.equal(G.beginBattle(state, NOV(17)).ok, false);
+  G.checkHabit(state, ids[0], NOV(17));
+  assert.equal(left(state, 17), 1);
+  // 새벽 3:59까지는 아직 전날 기회를 쓴다
+  const s2 = withHabits().state;
+  G.checkHabit(s2, Object.keys(s2.habits)[0], NOV(16, 22));
+  assert.equal(G.beginBattle(s2, NOV(17, 3, 59)).ok, true);
+  assert.equal(s2.days['2026-11-16'].battles, 1);
+});
+
+test('지운 습관도 그날 이미 완료했다면 그날 기회는 그대로다', () => {
+  const { state, ids } = withHabits();
+  G.checkHabit(state, ids[0], NOV(16));
+  G.deleteHabit(state, ids[0], NOV(16));
+  assert.equal(left(state), 1);
 });
 
 test('승리하면 골드를 받고 다음 스테이지가 열린다. 경험치와 HP는 전투로 변하지 않는다', () => {
-  const state = hero(3);
+  const { state, ids } = withHabits();
+  G.checkHabit(state, ids[0], NOV(16));
+  G.checkHabit(state, ids[1], NOV(16));
   Object.assign(state.player, { xp: 40, totalXp: 190, gold: 10, hp: 33 });
-  const start = G.beginBattle(state);
+  const start = G.beginBattle(state, NOV(16));
   assert.deepEqual(G.finishBattle(state, start.stage, true), { ok: true, won: true, gold: 3 });
   assert.deepEqual(state.player, { level: 3, xp: 40, totalXp: 190, gold: 13, hp: 33 });
-  assert.deepEqual(state.battle, { cleared: 1, tickets: 2, wins: 1, losses: 0 });
+  assert.deepEqual(state.battle, { cleared: 1, wins: 1, losses: 0 });
   assert.equal(G.nextStage(state), 2);
+  assert.equal(left(state), 1);
   // 보스(5스테이지) 보상은 15 G
   state.battle.cleared = 4;
   assert.equal(G.finishBattle(state, 5, true).gold, 15);
@@ -248,20 +296,23 @@ test('승리하면 골드를 받고 다음 스테이지가 열린다. 경험치�
 });
 
 test('패배하면 그 기회만 사라지고 아무것도 잃지 않는다', () => {
-  const state = hero(3);
+  const { state, ids } = withHabits();
+  G.checkHabit(state, ids[0], NOV(16));
   Object.assign(state.player, { xp: 40, totalXp: 190, gold: 10, hp: 33 });
-  const start = G.beginBattle(state);
+  const start = G.beginBattle(state, NOV(16));
   assert.deepEqual(G.finishBattle(state, start.stage, false), { ok: true, won: false, gold: 0 });
   assert.deepEqual(state.player, { level: 3, xp: 40, totalXp: 190, gold: 10, hp: 33 });
-  assert.deepEqual(state.battle, { cleared: 0, tickets: 2, wins: 0, losses: 1 });
+  assert.deepEqual(state.battle, { cleared: 0, wins: 0, losses: 1 });
+  assert.equal(left(state), 0);
 });
 
 test('같은 스테이지의 보상을 두 번 받을 수 없다', () => {
-  const state = hero();
-  G.beginBattle(state);
+  const { state, ids } = withHabits();
+  G.checkHabit(state, ids[0], NOV(16));
+  G.beginBattle(state, NOV(16));
   assert.equal(G.finishBattle(state, 1, true).ok, true);
   assert.deepEqual(G.finishBattle(state, 1, true), { ok: false, reason: 'stale' });
-  assert.equal(state.player.gold, 3);
+  assert.equal(state.player.gold, 2 + 3);
   assert.equal(state.battle.cleared, 1);
 });
 
@@ -271,20 +322,34 @@ test('전투 골드는 습관 수입보다 적다: 24스테이지까지 전부 �
   assert.equal(total, 288); // 보통 습관 5개를 매일 지키면 하루 30 G
 });
 
-test('백업: 전투 기록이 포함되고, 전투가 생기기 전의 백업(1 버전)도 가져올 수 있다', () => {
-  const state = hero(4);
-  G.beginBattle(state);
-  G.finishBattle(state, 1, true);
-  const data = JSON.parse(JSON.stringify(exportData(state, NOV(20))));
-  assert.deepEqual(data.battle, { cleared: 1, tickets: 2, wins: 1, losses: 0 });
-  assert.deepEqual(importData(JSON.stringify(data)).battle, state.battle);
+test('백업: 전투 기록과 그날 싸운 횟수가 포함되고, 예전 백업(전투 없음, 쌓아 둔 기회 있음)도 가져올 수 있다', () => {
+  const { state, ids } = withHabits(4);
+  G.checkHabit(state, ids[0], NOV(16));
+  G.checkHabit(state, ids[1], NOV(16));
+  const start = G.beginBattle(state, NOV(16));
+  G.finishBattle(state, start.stage, true);
+  const data = JSON.parse(JSON.stringify(exportData(state, NOV(16, 20))));
+  assert.deepEqual(data.battle, { cleared: 1, wins: 1, losses: 0 });
+  const restored = importData(JSON.stringify(data));
+  assert.deepEqual(restored.battle, state.battle);
+  assert.equal(G.battleChances(restored, '2026-11-16').left, 1); // 가져와도 오늘 쓴 기회는 그대로 쓴 것
 
-  const old = structuredClone(data);
-  old.version = 1;
-  delete old.battle;
-  assert.deepEqual(importData(JSON.stringify(old)).battle, { cleared: 0, tickets: 3, wins: 0, losses: 0 });
+  // 전투가 생기기 전(1 버전)의 백업
+  const v1 = structuredClone(data);
+  v1.version = 1;
+  delete v1.battle;
+  assert.deepEqual(importData(JSON.stringify(v1)).battle, { cleared: 0, wins: 0, losses: 0 });
+  // 쌓아 두는 기회(tickets)가 있던 2 버전 백업: 기회 숫자는 버리고 나머지는 가져온다
+  const v2 = structuredClone(data);
+  v2.battle.tickets = 7;
+  v2.completions[0].tickets = 1;
+  const r2 = importData(JSON.stringify(v2));
+  assert.deepEqual(r2.battle, { cleared: 1, wins: 1, losses: 0 });
+  assert.equal('tickets' in Object.values(r2.completions)[0], false);
 
-  const bad = structuredClone(data);
-  bad.battle.cleared = -1;
-  assert.throws(() => importData(JSON.stringify(bad)), /전투/);
+  for (const change of [(d) => (d.battle.cleared = -1), (d) => (d.battle.tickets = 'many'), (d) => (d.days[0].battles = -2)]) {
+    const bad = structuredClone(data);
+    change(bad);
+    assert.throws(() => importData(JSON.stringify(bad)), /전투|날짜 기록/);
+  }
 });

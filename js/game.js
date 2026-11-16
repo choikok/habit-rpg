@@ -69,9 +69,11 @@ export const ITEMS = Object.fromEntries(
 
 // 전투
 export const BASE_FEVER_PCT = 3; // 장신구가 없어도 공격할 때마다 3% 확률로 피버
-export const TICKET_PER_HABIT = 1; // 습관 하나 완료 = 전투 기회 1
-export const TICKET_PER_PERFECT_DAY = 1; // 완벽한 하루 = 전투 기회 1 추가
-export const START_TICKETS = 3; // 처음에 바로 해 볼 수 있도록
+// 전투 기회는 하루 단위로, 그날의 기록에서 매번 다시 센다(따로 쌓아 두는 숫자가 없다).
+// 오늘 기회 = 오늘 완료한 습관 수 × 1 + 완벽한 하루 1 − 오늘 싸운 횟수. 남은 기회는 다음 날로 넘어가지 않는다.
+// 체크를 해제하면 완료 수가 줄고 다시 체크하면 원래대로 돌아올 뿐이라, 체크·해제로 기회를 늘릴 수 없다.
+export const CHANCE_PER_HABIT = 1;
+export const CHANCE_PER_PERFECT_DAY = 1;
 
 const HOUR_MS = 3600000;
 const DAY_MS = 86400000;
@@ -113,8 +115,8 @@ export const defaultGear = () => ({
   equipped: { head: null, body: null, weapon: null, accessory: null },
   carry: 0,
 });
-// cleared: 깬 스테이지 수(다음에 싸울 스테이지는 cleared + 1), tickets: 남은 전투 기회
-export const defaultBattle = () => ({ cleared: 0, tickets: START_TICKETS, wins: 0, losses: 0 });
+// cleared: 깬 스테이지 수(다음에 싸울 스테이지는 cleared + 1). 그날 싸운 횟수는 날짜 기록(days[day].battles)에 둔다.
+export const defaultBattle = () => ({ cleared: 0, wins: 0, losses: 0 });
 export const defaultSettings = () => ({ dayStartHour: 4, debugOffsetMs: 0, lastBackupAt: null });
 
 export function createState() {
@@ -340,8 +342,6 @@ function awardPerfectIfDue(state, day) {
   gainXp(state, PERFECT_DAY.xp);
   state.player.gold += PERFECT_DAY.gold;
   markPlayer(state);
-  state.battle.tickets += TICKET_PER_PERFECT_DAY;
-  markBattle(state);
   return rec.perfect;
 }
 
@@ -371,9 +371,6 @@ export function checkHabit(state, habitId, nowMs) {
   markPlayer(state);
   const perfect = awardPerfectIfDue(state, day);
   rec.hp = state.player.hp - hpBefore; // 취소할 때 되돌릴 HP 변화량(레벨 업으로 채워진 것 포함)
-  rec.tickets = TICKET_PER_HABIT;
-  state.battle.tickets += TICKET_PER_HABIT;
-  markBattle(state);
 
   return {
     ok: true,
@@ -411,16 +408,12 @@ export function uncheckHabit(state, habitId, nowMs) {
   }
   const dayRec = state.days[day];
   const perfect = dayRec?.perfect ?? null;
-  // 받았던 전투 기회도 되돌린다. 이미 써 버렸다면 음수가 되고, 다시 채울 때까지 전투할 수 없다.
-  state.battle.tickets -= rec.tickets ?? 0;
   if (perfect) {
     xp += perfect.xp;
     gold += perfect.gold;
     dayRec.perfect = null;
     mark(state, 'days', day, dayRec);
-    state.battle.tickets -= TICKET_PER_PERFECT_DAY;
   }
-  markBattle(state);
   const levelBefore = state.player.level;
   takeBackXp(state, xp);
   state.player.gold -= gold;
@@ -478,12 +471,23 @@ export function battleStats(state) {
 
 export const nextStage = (state) => state.battle.cleared + 1;
 
-/** 전투 기회 하나를 쓰고 전투를 시작한다. 중간에 나가도 기회는 돌아오지 않는다. */
-export function beginBattle(state) {
-  if (state.battle.tickets < 1) return { ok: false, reason: 'no-ticket' };
-  state.battle.tickets -= 1;
-  markBattle(state);
-  return { ok: true, stage: nextStage(state), player: battleStats(state), monster: monsterFor(nextStage(state)) };
+/** 그날의 전투 기회. left 는 0 아래로 내려가지 않는다(싸운 뒤 체크를 해제한 경우). */
+export function battleChances(state, day) {
+  const done = Object.values(state.completions).filter((c) => c.day === day).length;
+  const perfect = state.days[day]?.perfect ? 1 : 0;
+  const earned = done * CHANCE_PER_HABIT + perfect * CHANCE_PER_PERFECT_DAY;
+  const used = state.days[day]?.battles ?? 0;
+  return { done, perfect, earned, used, left: Math.max(0, earned - used) };
+}
+
+/** 오늘 전투 기회 하나를 쓰고 전투를 시작한다. 중간에 나가도 기회는 돌아오지 않는다. */
+export function beginBattle(state, nowMs) {
+  const day = today(state, nowMs);
+  if (battleChances(state, day).left < 1) return { ok: false, reason: 'no-chance' };
+  const rec = dayRecord(state, day);
+  rec.battles = (rec.battles ?? 0) + 1;
+  mark(state, 'days', day, rec);
+  return { ok: true, day, stage: nextStage(state), player: battleStats(state), monster: monsterFor(nextStage(state)) };
 }
 
 /** 전투 결과를 반영한다. 이기면 골드를 받고 다음 스테이지가 열린다. 져도 잃는 것은 없다. */

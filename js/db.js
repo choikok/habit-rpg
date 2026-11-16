@@ -47,7 +47,11 @@ export async function loadState() {
     if (key === 'settings') state.settings = { ...defaultSettings(), ...value };
     if (key === 'progress') state.progress = { ...defaultProgress(), ...value };
     if (key === 'gear') state.gear = { ...defaultGear(), ...value };
-    if (key === 'battle') state.battle = { ...defaultBattle(), ...value };
+    if (key === 'battle') {
+      // 예전 버전의 '쌓아 두는 전투 기회(tickets)'는 더 쓰지 않는다
+      const { tickets, ...rest } = value;
+      state.battle = { ...defaultBattle(), ...rest };
+    }
   }
   for (const h of habits) state.habits[h.id] = h;
   for (const c of completions) state.completions[c.id] = c;

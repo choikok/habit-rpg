@@ -113,6 +113,7 @@ async function step(name, fn) {
     await page.waitForSelector('#today-date:not(:empty)');
   };
   const seedPlayer = (patch) => seedMeta('player', patch);
+  const chanceDetail = () => page.textContent('#battle-chance-detail');
   const battleResult = async () => {
     await page.waitForSelector('#arena-result[data-result]');
     return page.locator('#arena-result').getAttribute('data-result');
@@ -459,6 +460,46 @@ async function step(name, fn) {
     await page.waitForSelector('.habit');
     assert.deepEqual(await page.locator('.habit-name').allTextContents(),
       ['산책 30분', '책 10쪽 읽기', '물 300ml 마시기', '일기 한 줄 쓰기', '책상 정리 15분']);
+  });
+
+  await step('[7단계] 오늘 화면의 연필 버튼으로 바로 수정하고, 수정 화면에서 삭제도 된다', async () => {
+    await tab('today');
+    assert.equal(await page.locator('.habit-edit').count(), 5);
+    await page.waitForTimeout(300);
+    await shot('29-오늘-수정-버튼');
+    // 연필을 누르면 체크되지 않고 수정 화면이 열린다
+    await page.locator('li', { hasText: '책상 정리 15분' }).locator('.habit-edit').click();
+    assert.match(await page.textContent('.sheet h2'), /습관 수정/);
+    assert.equal(await page.inputValue('[name="name"]'), '책상 정리 15분');
+    await page.fill('[name="name"]', '책상 정리 20분');
+    await page.locator('.sheet .seg label', { hasText: '보통' }).click();
+    for (const d of ['토', '일']) await page.locator('.seg.cols-7 label', { hasText: d }).click(); // 평일만
+    await page.waitForTimeout(300);
+    await shot('30-수정-화면');
+    await page.locator('form button[type="submit"]').click();
+    await page.waitForSelector('.backdrop', { state: 'detached' });
+    assert.equal(await habit('책상 정리 20분').getAttribute('aria-pressed'), 'false'); // 체크되지 않았다
+    assert.equal(await rewardOf('책상 정리 20분'), '+10 XP · +4 G');
+    await tab('settings');
+    assert.match(await page.locator('.manage-list').textContent(), /책상 정리 20분\s*생활 · 보통 · 평일/);
+    await tab('today');
+
+    // 수정 화면의 '이 습관 삭제'
+    await page.locator('li', { hasText: '일기 한 줄 쓰기' }).locator('.habit-edit').click();
+    await page.locator('[data-delete]').click();
+    assert.match(await page.textContent('.dialog'), /"일기 한 줄 쓰기" 습관을 지웁니다/);
+    await page.locator('[data-answer="yes"]').click();
+    await page.waitForSelector('.backdrop', { state: 'detached' });
+    assert.deepEqual(await page.locator('.habit-name').allTextContents(), ['산책 30분', '책 10쪽 읽기', '물 300ml 마시기', '책상 정리 20분']);
+
+    // 체크된 습관도 연필로 고칠 수 있고, 체크 상태는 그대로다
+    await habit('물 300ml 마시기').click();
+    await page.locator('li', { hasText: '물 300ml 마시기' }).locator('.habit-edit').click();
+    await page.locator('.sheet .seg label', { hasText: '보통' }).click();
+    assert.equal(await page.inputValue('[name="name"]'), '물 1L 마시기'); // 추천에서 온 습관: 분량이 따라 바뀐다
+    await page.locator('form button[type="submit"]').click();
+    await page.waitForSelector('.backdrop', { state: 'detached' });
+    assert.equal(await habit('물 1L 마시기').getAttribute('aria-pressed'), 'true');
 
     // 다음 시험을 위해 다시 빈 상태로 되돌린다
     await tab('settings');
@@ -769,11 +810,13 @@ async function step(name, fn) {
     assert.deepEqual(sizes, [192, 512, 512, 180]);
   });
 
-  await step('[5단계] 전투 탭: 다음 스테이지와 내 능력치(레벨 + 낀 장비), 전투 기회가 보인다', async () => {
+  await step('[5단계] 전투 탭: 다음 스테이지, 내 능력치(레벨 + 낀 장비), 오늘 전투 기회가 보인다', async () => {
     await page.goto(`${url}?debug&speed=8`); // 시험에서는 전투를 8배 빠르게 돌린다
     await page.waitForSelector('#today-date:not(:empty)');
-    await seedMeta('battle', { cleared: 0, tickets: 10, wins: 0, losses: 0 });
-    assert.equal(await page.textContent('#battle-badge'), '10');
+    await seedMeta('battle', { cleared: 0, wins: 0, losses: 0 });
+    // 12월 6일: 물 마시기·산책 완료 → 오늘 기회 2
+    assert.equal((await hero()).progress, '2 / 3');
+    assert.equal(await page.textContent('#battle-badge'), '2');
     await tab('battle');
     assert.equal(await page.textContent('#stage-label'), '스테이지 1');
     assert.equal(await page.textContent('#stage-name'), '말랑 젤리');
@@ -782,35 +825,65 @@ async function step(name, fn) {
       await Promise.all(['atk', 'def', 'hp', 'cd', 'fever'].map((k) => page.textContent(`#bs-${k}`))),
       ['66', '20', '230', '6.4초', '15%'],
     );
-    assert.equal(await tickets(), '10');
+    assert.equal(await tickets(), '2');
+    assert.equal(await chanceDetail(), '오늘 완료 2개 − 싸운 횟수 0');
     await shot('21-전투-대기');
   });
 
-  await step('[5단계] 승리: 골드를 받고 다음 스테이지가 열린다 (경험치·HP는 그대로)', async () => {
+  await step('[5단계] 승리: 골드를 받고 다음 스테이지가 열린다. 오늘 기회를 다 쓰면 더 싸울 수 없다', async () => {
     const before = await hero();
     const hpBefore = await hp();
     await page.locator('[data-action="battle-start"]').click();
     assert.equal(await battleResult(), 'win');
     assert.match(await page.textContent('#arena-result'), /승리!\s*\+3 G/);
     assert.match(await page.textContent('#arena-result'), /다음은 스테이지 2 · 성난 버섯/);
+    assert.match(await page.textContent('#arena-result [data-again]'), /다음 스테이지 \(오늘 기회 1\)/);
     await page.waitForTimeout(500);
     await shot('23-전투-승리');
-    await page.locator('#arena-result [data-again]').click(); // 다음 스테이지로 바로 이어서
+    await page.locator('#arena-result [data-again]').click();
     await page.waitForSelector('#arena-result', { state: 'hidden' });
     assert.equal(await battleResult(), 'win');
     assert.match(await page.textContent('#arena-result'), /\+4 G/);
+    assert.equal(await page.locator('#arena-result [data-again]').count(), 0);
+    assert.match(await page.textContent('#arena-result'), /오늘 전투 기회를 다 썼어요/);
     await page.locator('#arena-result [data-close]').click();
     assert.equal(await page.locator('.arena').count(), 0);
     assert.equal(await page.textContent('#stage-label'), '스테이지 3');
-    assert.equal(await tickets(), '8');
+    assert.equal(await tickets(), '0');
+    assert.equal(await page.locator('[data-action="battle-start"]').isDisabled(), true);
+    assert.equal(await chanceDetail(), '오늘 완료 2개 − 싸운 횟수 2');
     assert.match(await page.textContent('#battle-record'), /2승 0패/);
     const after = await hero();
     assert.equal(Number(after.gold.replace(',', '')), Number(before.gold.replace(',', '')) + 7);
     assert.deepEqual([after.level, after.xp, await hp()], [before.level, before.xp, hpBefore]);
   });
 
+  await step('[7단계] 싸운 뒤 체크를 해제했다 다시 체크해도 전투 기회가 다시 생기지 않는다', async () => {
+    for (let i = 0; i < 3; i++) {
+      await tab('today');
+      await habit('산책').click(); // 해제
+      assert.equal(await page.locator('#battle-badge').isHidden(), true);
+      await habit('산책').click(); // 다시 체크
+      assert.equal(await page.locator('#battle-badge').isHidden(), true);
+      await tab('battle');
+      assert.equal(await tickets(), '0');
+      assert.equal(await page.locator('[data-action="battle-start"]').isDisabled(), true);
+    }
+    assert.equal(await chanceDetail(), '오늘 완료 2개 − 싸운 횟수 2');
+    await page.reload(); // 다시 열어도 그대로
+    await page.waitForSelector('.habit');
+    await tab('battle');
+    assert.equal(await tickets(), '0');
+    // 새 습관을 완료하면 그만큼 생긴다: 책 읽기 +1, 오늘 3/3 완벽한 하루 +1
+    await tab('today');
+    await habit('책 읽기').click();
+    assert.equal(await page.textContent('#battle-badge'), '2');
+    await tab('battle');
+    assert.equal(await chanceDetail(), '오늘 완료 3개 + 완벽한 하루 1 − 싸운 횟수 2');
+  });
+
   await step('[5단계] 스킬: 쿨타임이 차면 버튼이 켜지고, 누르면 "강타!"가 나간 뒤 다시 쿨타임이 돈다', async () => {
-    await seedMeta('battle', { cleared: 19, tickets: 5 });
+    await seedMeta('battle', { cleared: 19 });
     await tab('battle');
     assert.equal(await page.textContent('#stage-name'), '어둠의 불꽃 도깨비 대장');
     assert.match(await page.locator('.stage-card').getAttribute('class'), /is-boss/);
@@ -825,10 +898,11 @@ async function step(name, fn) {
     await page.waitForSelector('#skill-btn:not(.is-ready)');
     assert.ok(['win', 'lose'].includes(await battleResult()));
     await page.locator('#arena-result [data-close]').click();
+    assert.equal(await tickets(), '1');
   });
 
-  await step('[5단계] 패배: 전투 기회만 줄고 골드·경험치·HP·스테이지는 그대로다', async () => {
-    await seedMeta('battle', { cleared: 59, tickets: 2, wins: 0, losses: 0 });
+  await step('[5단계] 패배: 오늘 기회만 줄고 골드·경험치·HP·스테이지는 그대로다', async () => {
+    await seedMeta('battle', { cleared: 59, wins: 0, losses: 0 });
     const before = [await hero(), await hp()];
     await tab('battle');
     await page.locator('[data-action="battle-start"]').click();
@@ -839,29 +913,13 @@ async function step(name, fn) {
     await page.locator('#arena-result [data-close]').click();
     assert.deepEqual([await hero(), await hp()], before);
     assert.equal(await page.textContent('#stage-label'), '스테이지 60 · 보스');
-    assert.equal(await tickets(), '1');
-    assert.match(await page.textContent('#battle-record'), /0승 1패/);
-  });
-
-  await step('[5단계] 전투 기회가 없으면 시작할 수 없고, 습관을 완료하면 생긴다 (취소하면 되돌아감)', async () => {
-    await seedMeta('battle', { cleared: 2, tickets: 0 });
-    assert.equal(await page.locator('#battle-badge').isHidden(), true);
-    await tab('battle');
-    assert.equal(await page.locator('[data-action="battle-start"]').isDisabled(), true);
     assert.equal(await tickets(), '0');
+    assert.match(await page.textContent('#battle-record'), /0승 1패/);
+    // 다음 시험을 위해 책 읽기 체크를 되돌린다 (이미 쓴 기회는 그대로 0)
     await tab('today');
-    await habit('책 읽기').click(); // 습관 +1, 오늘 3/3 완벽한 하루 +1
-    assert.equal(await page.textContent('#battle-badge'), '2');
+    await habit('책 읽기').click();
     await tab('battle');
-    assert.equal(await page.locator('[data-action="battle-start"]').isEnabled(), true);
-    assert.equal(await tickets(), '2');
-    await tab('today');
-    await habit('책 읽기').click(); // 취소
-    assert.equal(await page.locator('#battle-badge').isHidden(), true);
-    await page.reload(); // 전투 진행 상황은 저장되어 있다
-    await page.waitForSelector('.habit');
-    await tab('battle');
-    assert.equal(await page.textContent('#stage-label'), '스테이지 3');
+    assert.equal(await tickets(), '0');
   });
 
   await step('[5단계] 상점 장비에 전투 능력치가 표시되고, 끼고 벗으면 내 능력치가 바뀐다', async () => {
@@ -883,7 +941,7 @@ async function step(name, fn) {
     assert.equal(await page.textContent('#bs-atk'), '66');
   });
 
-  await step('[5단계] 전투가 없던 예전 데이터로 열어도 그대로 열리고, 전투 기회 3번으로 시작한다', async () => {
+  await step('[7단계] 예전 데이터(전투 없음, 또는 쌓아 둔 기회가 있던 버전)로 열어도 그대로 열린다', async () => {
     const before = await hero();
     await seedMeta('battle', null);
     assert.deepEqual(await hero(), before);
@@ -891,7 +949,11 @@ async function step(name, fn) {
     assert.equal(await wearing(), 'head4 body4 weapon4 accessory4');
     await tab('battle');
     assert.equal(await page.textContent('#stage-label'), '스테이지 1');
-    assert.equal(await tickets(), '3');
+    // 쌓아 둔 기회 9번이 있던 버전: 스테이지는 이어지고, 기회는 오늘 기록으로 다시 센다
+    await seedMeta('battle', { cleared: 5, tickets: 9, wins: 5, losses: 0 });
+    await tab('battle');
+    assert.equal(await page.textContent('#stage-label'), '스테이지 6');
+    assert.equal(await tickets(), '0'); // 오늘 완료 2개 − 싸운 횟수 4
     await tab('today');
   });
 
@@ -901,7 +963,7 @@ async function step(name, fn) {
     await page.waitForSelector('.habit');
     const before = await hero();
     assert.equal(await page.locator('#update-banner').isHidden(), true);
-    assert.deepEqual(await page.evaluate(() => caches.keys()), ['habit-rpg-v3']);
+    assert.deepEqual(await page.evaluate(() => caches.keys()), ['habit-rpg-v4']);
 
     pretendNewVersion = true;
     await page.evaluate(async () => (await navigator.serviceWorker.getRegistration()).update());
@@ -955,6 +1017,15 @@ async function step(name, fn) {
     assert.match(await reportText(), /12월 6일 \(일\) HP −5 2\/3 완료/);
     await dismissReport();
     assert.equal(await hp(), '45 / 50');
+    // [7단계] 새 날의 전투 기회는 0에서 시작하고, 습관을 완료하면 생긴다
+    await tab('battle');
+    assert.equal(await tickets(), '0');
+    assert.equal(await chanceDetail(), '오늘 습관을 하나 완료하면 전투 기회가 1번 생겨요.');
+    await tab('today');
+    await habit('물 마시기').click();
+    assert.equal(await page.textContent('#battle-badge'), '1');
+    await habit('물 마시기').click();
+    assert.equal(await page.locator('#battle-badge').isHidden(), true);
     assert.equal(await page.locator('#debug-banner').isVisible(), true);
     await page.locator('#debug-banner').click();
     assert.equal(await page.textContent('#today-date'), '12월 6일 (일)');

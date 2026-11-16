@@ -156,6 +156,9 @@ function habitRow(habit) {
         </span>
         <span class="check">${CHECK_ICON}</span>
       </button>
+      <button type="button" class="habit-edit" data-action="edit-habit" data-id="${habit.id}" aria-label="${esc(habit.name)} 수정">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>
+      </button>
     </li>`;
 }
 
@@ -501,10 +504,15 @@ function openHabitForm(habit) {
         <button type="button" class="btn" data-cancel>취소</button>
         <button type="submit" class="btn primary">${habit ? '저장' : '추가'}</button>
       </div>
+      ${habit ? '<button type="button" class="link-btn danger block-link" data-delete>이 습관 삭제</button>' : ''}
     </form>`);
 
   const form = $('form', el);
   $('[data-cancel]', form).addEventListener('click', close);
+  $('[data-delete]', form)?.addEventListener('click', () => {
+    close();
+    removeHabit(habit.id);
+  });
   $('[data-every-day]', form).addEventListener('click', () => {
     form.querySelectorAll('[name="days"]').forEach((box) => (box.checked = true));
   });
@@ -667,17 +675,26 @@ const stageLabel = (m) => `스테이지 ${m.stage}${m.boss ? ' · 보스' : ''}`
 
 function updateBattleBadge(pop = false) {
   const badge = $('#battle-badge');
-  const tickets = Math.max(0, state.battle.tickets);
-  badge.hidden = tickets === 0;
-  badge.textContent = tickets > 99 ? '99+' : tickets;
-  if (pop && tickets) replay(badge, 'bump');
+  const { left } = G.battleChances(state, currentDay);
+  badge.hidden = left === 0;
+  badge.textContent = left > 99 ? '99+' : left;
+  if (pop && left) replay(badge, 'bump');
+}
+
+/** 오늘 전투 기회가 어떻게 계산됐는지 한 줄로 */
+function chanceText(c) {
+  if (!c.done) return '오늘 습관을 하나 완료하면 전투 기회가 1번 생겨요.';
+  const parts = [`오늘 완료 ${c.done}개`];
+  if (c.perfect) parts.push('완벽한 하루 1');
+  return `${parts.join(' + ')} − 싸운 횟수 ${c.used}`;
 }
 
 function renderBattle() {
   updateBattleBadge();
   const m = B.monsterFor(G.nextStage(state));
   const p = G.battleStats(state);
-  const { tickets, wins, losses } = state.battle;
+  const { wins, losses } = state.battle;
+  const chances = G.battleChances(state, currentDay);
   const stat = (label, value, id) => `<div><dt>${label}</dt><dd id="bs-${id}">${value}</dd></div>`;
   $('#view-battle').innerHTML = `
     <h1 class="page-title">전투</h1>
@@ -688,9 +705,10 @@ function renderBattle() {
       <div class="stage-stats">체력 ${m.hp} · 공격 ${m.atk} · 방어 ${m.def}</div>
       <div class="stage-reward">승리 보상 <i class="coin"></i><b>${m.gold}</b></div>
     </div>
-    <button type="button" class="btn primary block big" data-action="battle-start"${tickets < 1 ? ' disabled' : ''}>⚔ 전투 시작</button>
-    <p class="ticket-line">전투 기회 <b id="battle-tickets">${Math.max(0, tickets)}</b>번
-      <span>${tickets < 0 ? `취소한 체크만큼 ${-tickets}번을 먼저 채워야 해요.` : '습관을 하나 완료할 때마다 1번, 완벽한 하루에 1번 더 생겨요.'}</span></p>
+    <button type="button" class="btn primary block big" data-action="battle-start"${chances.left < 1 ? ' disabled' : ''}>⚔ 전투 시작</button>
+    <p class="ticket-line">오늘 전투 기회 <b id="battle-tickets">${chances.left}</b>번
+      <span id="battle-chance-detail">${chanceText(chances)}</span>
+      <span>습관 하나 완료마다 1번, 완벽한 하루에 1번 더. 남은 기회는 다음 날로 넘어가지 않아요.</span></p>
     <div class="card">
       <h2>내 능력치</h2>
       <dl class="battle-stats">
@@ -703,9 +721,11 @@ function renderBattle() {
 }
 
 function startBattle() {
-  const start = G.beginBattle(state);
+  syncDay(); // 하루가 넘어갔으면 새 날 기준으로 센다
+  const start = G.beginBattle(state, now());
   if (!start.ok) {
-    toast('전투 기회가 없어요. 습관을 완료하면 생겨요.');
+    renderBattle();
+    toast('오늘 전투 기회가 없어요. 습관을 완료하면 생겨요.');
     return;
   }
   save();
@@ -814,11 +834,11 @@ function showBattleResult(el, b, start) {
   (won ? $('#f-foe', el) : $('#f-me', el)).classList.add('is-down');
   $('#skill-btn', el).hidden = true;
 
-  const tickets = Math.max(0, state.battle.tickets);
+  const { left } = G.battleChances(state, currentDay);
   const next = B.monsterFor(G.nextStage(state));
-  const again = tickets
-    ? `<button type="button" class="btn primary" data-again>${won ? '다음 스테이지' : '다시 도전'} (기회 ${tickets})</button>`
-    : '';
+  const again = left
+    ? `<button type="button" class="btn primary" data-again>${won ? '다음 스테이지' : '다시 도전'} (오늘 기회 ${left})</button>`
+    : '<p class="muted">오늘 전투 기회를 다 썼어요. 습관을 더 완료하면 또 생겨요.</p>';
   const box = $('#arena-result', el);
   box.dataset.result = b.result;
   box.innerHTML = won
