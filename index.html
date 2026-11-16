@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#14122b">
+  <meta name="description" content="습관을 체크하면 캐릭터가 성장하는 RPG 습관 체크리스트">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="습관 모험">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <title>습관 모험</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <button id="debug-banner" class="debug-banner" type="button" hidden></button>
+
+    <main>
+      <!-- 1. 오늘 -->
+      <section id="view-today" class="view">
+        <div class="hero">
+          <div class="hero-char" id="hero-char"></div>
+          <div class="hero-info">
+            <div class="hero-top">
+              <span class="level-badge">Lv.<b id="hero-level">1</b></span>
+              <span class="hero-title" id="hero-title"></span>
+              <span class="gold" aria-label="골드"><i class="coin"></i><b id="hero-gold">0</b></span>
+            </div>
+            <div class="bar-row">
+              <span class="bar-label">HP</span>
+              <div class="bar hp" role="progressbar" aria-label="HP"><div class="bar-fill" id="hp-fill"></div></div>
+              <span class="bar-num" id="hp-num"></span>
+            </div>
+            <div class="bar-row">
+              <span class="bar-label">경험치</span>
+              <div class="bar xp" role="progressbar" aria-label="경험치"><div class="bar-fill" id="xp-fill"></div></div>
+              <span class="bar-num" id="xp-num"></span>
+            </div>
+            <div class="bar-row">
+              <span class="bar-label">오늘</span>
+              <div class="bar progress" role="progressbar" aria-label="오늘 진행률"><div class="bar-fill" id="progress-fill"></div></div>
+              <span class="bar-num" id="progress-num"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-head">
+          <div>
+            <h1>오늘의 습관</h1>
+            <p class="date" id="today-date"></p>
+          </div>
+          <button class="btn small" type="button" data-action="add-habit">+ 추가</button>
+        </div>
+        <div id="perfect-banner" class="perfect-banner" hidden></div>
+        <div id="rest-banner" class="rest-banner" hidden>
+          <span>🛌 오늘은 휴식일이에요. 못 한 습관이 있어도 HP가 깎이지 않아요.</span>
+          <button type="button" class="link-btn" data-action="rest-off">취소</button>
+        </div>
+        <ul id="habit-list" class="habit-list"></ul>
+        <p id="today-hint" class="hint" hidden></p>
+        <div id="rest-box" class="rest-box"></div>
+      </section>
+
+      <!-- 2. 상점/장비 -->
+      <section id="view-shop" class="view" hidden></section>
+
+      <!-- 3. 기록 -->
+      <section id="view-log" class="view" hidden></section>
+
+      <!-- 4. 설정 -->
+      <section id="view-settings" class="view" hidden></section>
+    </main>
+
+    <nav class="tabbar" aria-label="화면 이동">
+      <button type="button" data-tab="today" class="is-active">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.8 2.8L16.5 9.5"/></svg>
+        <span>오늘</span>
+      </button>
+      <button type="button" data-tab="shop">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14l-1.2 11.5H6.2z"/><path d="M9 8V6.5a3 3 0 0 1 6 0V8"/></svg>
+        <span>상점</span>
+      </button>
+      <button type="button" data-tab="log">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5.5" width="16" height="14.5" rx="2.5"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4"/></svg>
+        <span>기록</span>
+      </button>
+      <button type="button" data-tab="settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3.5v2.3M12 18.2v2.3M3.5 12h2.3M18.2 12h2.3M6 6l1.6 1.6M16.4 16.4L18 18M18 6l-1.6 1.6M7.6 16.4L6 18"/></svg>
+        <span>설정</span>
+      </button>
+    </nav>
+  </div>
+
+  <div id="fx-layer" aria-hidden="true"></div>
+  <div id="overlay-root"></div>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <input type="file" id="import-file" accept="application/json,.json" hidden>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
