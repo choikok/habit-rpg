@@ -3,6 +3,7 @@
 // 상태를 바꾼 함수는 바뀐 레코드를 state.dirty 에 적어 두고, 저장은 db.js 가 맡는다.
 
 import { monsterFor } from './battle.js';
+import { SUGGESTIONS } from './suggestions.js';
 
 export const DIFFICULTY = {
   easy: { label: '쉬움', xp: 5, gold: 2 },
@@ -167,7 +168,16 @@ function cleanInput(input) {
   if (!CATEGORY[input.category]) throw new Error('분야를 골라 주세요.');
   const days = [...new Set(input.days ?? ALL_DAYS)].filter((d) => ALL_DAYS.includes(d)).sort();
   if (!days.length) throw new Error('반복 요일을 하루 이상 골라 주세요.');
-  return { name, difficulty: input.difficulty, category: input.category, days };
+  // 추천 습관에서 온 것이고 이름을 고치지 않았을 때만 추천과 연결해 둔다.
+  // 연결된 습관은 난이도를 바꾸면 이름(분량)도 따라 바뀐다.
+  const linked = Object.hasOwn(SUGGESTIONS, input.templateId ?? '')
+    && SUGGESTIONS[input.templateId].levels[input.difficulty].name === name;
+  return { name, difficulty: input.difficulty, category: input.category, days, templateId: linked ? input.templateId : null };
+}
+
+function setTemplate(habit, templateId) {
+  if (templateId) habit.templateId = templateId;
+  else delete habit.templateId;
 }
 
 export function addHabit(state, input, nowMs) {
@@ -180,8 +190,9 @@ export function addHabit(state, input, nowMs) {
     category: c.category,
     schedule: [{ from: day, days: c.days }],
     createdDay: day,
-    order: nowMs,
+    order: input.order ?? nowMs,
   };
+  setTemplate(habit, c.templateId);
   state.habits[habit.id] = habit;
   mark(state, 'habits', habit.id, habit);
   return habit;
@@ -195,6 +206,7 @@ export function updateHabit(state, id, input, nowMs) {
   habit.name = c.name;
   habit.difficulty = c.difficulty;
   habit.category = c.category;
+  setTemplate(habit, c.templateId);
   if (c.days.join() !== currentDays(habit).join()) {
     const last = habit.schedule[habit.schedule.length - 1];
     if (last.from === day) last.days = c.days;
@@ -212,6 +224,24 @@ export function deleteHabit(state, id, nowMs) {
   mark(state, 'habits', id, undefined);
   const perfect = awardPerfectIfDue(state, today(state, nowMs));
   return { ok: true, perfect };
+}
+
+/** 이미 습관으로 담은 추천의 id 들 */
+export const usedTemplateIds = (state) => new Set(Object.values(state.habits).map((h) => h.templateId).filter(Boolean));
+
+/** 추천 습관 여러 개를 같은 난이도로 한 번에 추가한다(매일 반복). 이미 담은 것은 건너뛴다. */
+export function addSuggested(state, templateIds, difficulty, nowMs) {
+  if (!DIFFICULTY[difficulty]) throw new Error('난이도를 골라 주세요.');
+  const used = usedTemplateIds(state);
+  const added = [];
+  for (const id of new Set(templateIds)) {
+    const s = SUGGESTIONS[id];
+    if (!s || used.has(id)) continue;
+    added.push(addHabit(state, {
+      name: s.levels[difficulty].name, difficulty, category: s.category, templateId: id, order: nowMs + added.length,
+    }, nowMs));
+  }
+  return added;
 }
 
 export const habitList = (state) => Object.values(state.habits).sort((a, b) => a.order - b.order);

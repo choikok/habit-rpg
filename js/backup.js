@@ -1,6 +1,7 @@
 // JSON 백업 내보내기·가져오기. 화면이나 저장소를 건드리지 않는 순수 함수만 둔다.
 // 가져올 때는 파일 내용을 믿지 않고 항목마다 형식을 검사한다.
 import { CATEGORY, DIFFICULTY, HP_MAX, ITEMS, NAME_MAX, SLOTS, createState } from './game.js';
+import { SUGGESTIONS } from './suggestions.js';
 
 export const BACKUP_APP = 'habit-rpg';
 export const BACKUP_VERSION = 2; // 2: 전투(battle) 추가. 1 버전 파일도 그대로 가져올 수 있다.
@@ -47,7 +48,13 @@ function readHabit(h, i) {
     return { from: entry.from, days: [...new Set(entry.days)].sort() };
   });
   schedule.sort((a, b) => (a.from < b.from ? -1 : 1));
-  return { id: h.id, name: h.name.trim(), difficulty: h.difficulty, category: h.category, schedule, createdDay: h.createdDay, order: h.order };
+  const habit = { id: h.id, name: h.name.trim(), difficulty: h.difficulty, category: h.category, schedule, createdDay: h.createdDay, order: h.order };
+  if (h.templateId !== undefined) {
+    if (typeof h.templateId !== 'string') fail(`${where} 추천`);
+    // 지금 목록에 없는 추천이면 연결만 끊고 습관은 그대로 가져온다
+    if (Object.hasOwn(SUGGESTIONS, h.templateId)) habit.templateId = h.templateId;
+  }
+  return habit;
 }
 
 function readCompletion(c, i) {

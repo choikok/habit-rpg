@@ -375,6 +375,99 @@ async function step(name, fn) {
     assert.deepEqual(await hero(), { level: 1, xp: '0 / 50', gold: '0', progress: '0 / 0' });
   });
 
+  await step('[6단계] 빈 화면에서 "추천 습관 고르기": 입력 없이 여러 개를 한 번에 담는다', async () => {
+    await page.locator('.empty-today [data-action="suggest"]').click();
+    assert.equal(await page.locator('.sug-row').count(), 24);
+    const submit = page.locator('.sheet [type="submit"]');
+    assert.equal(await submit.isDisabled(), true);
+    assert.equal(await submit.textContent(), '습관을 골라 주세요');
+    const waterName = () => page.textContent('[data-name="water"]');
+    assert.equal(await waterName(), '물 300ml 마시기'); // 기본은 쉬움
+    await page.locator('.sheet .seg label', { hasText: '보통' }).click();
+    assert.equal(await waterName(), '물 1L 마시기');
+    await page.locator('.sheet .seg label', { hasText: '어려움' }).click();
+    assert.equal(await waterName(), '물 2L 마시기');
+    await page.locator('.sheet .seg label', { hasText: '쉬움' }).click();
+    for (const name of ['물 300ml 마시기', '산책 10분', '책 10쪽 읽기']) await page.locator('.sug-row', { hasText: name }).click();
+    assert.equal(await submit.textContent(), '3개 추가');
+    await page.waitForTimeout(300);
+    await shot('27-추천-담기');
+    await submit.click();
+    await page.waitForSelector('.backdrop', { state: 'detached' });
+    assert.deepEqual(await page.locator('.habit-name').allTextContents(), ['산책 10분', '책 10쪽 읽기', '물 300ml 마시기']);
+    assert.equal(await rewardOf('산책 10분'), '+5 XP · +2 G');
+    assert.equal((await hero()).progress, '0 / 3');
+    assert.match(await habit('산책 10분').getAttribute('class'), /cat-exercise/);
+    assert.match(await habit('물 300ml 마시기').getAttribute('class'), /cat-life/);
+  });
+
+  await step('[6단계] 습관 추가 화면의 추천 칩: 누르면 이름·분야가 채워지고, 난이도를 바꾸면 분량이 따라 바뀐다', async () => {
+    await setClock('2026-11-23T09:10:00');
+    await page.locator('#view-today .section-head [data-action="add-habit"]').click();
+    assert.equal(await page.locator('.sug-chip').count(), 6); // 첫 분야(운동) 6개
+    assert.equal(await page.locator('.sug-chip', { hasText: '산책' }).isDisabled(), true); // 이미 담은 것
+    await page.locator('.sug-tab', { hasText: '생활' }).click();
+    assert.equal(await page.locator('.sug-chip', { hasText: '물 마시기' }).isDisabled(), true);
+    await page.locator('.sug-chip', { hasText: '일기 쓰기' }).click();
+    assert.equal(await page.inputValue('[name="name"]'), '일기 세 줄 쓰기'); // 기본 난이도는 보통
+    assert.equal(await page.locator('[name="category"][value="life"]').isChecked(), true);
+    assert.deepEqual(await page.locator('.seg .amount').allTextContents(), ['한 줄', '세 줄', '한 쪽']);
+    await page.locator('.sheet .seg label', { hasText: '어려움' }).click();
+    assert.equal(await page.inputValue('[name="name"]'), '일기 한 쪽 쓰기');
+    await page.locator('.sheet .seg label', { hasText: '쉬움' }).click();
+    assert.equal(await page.inputValue('[name="name"]'), '일기 한 줄 쓰기');
+    await page.waitForTimeout(300);
+    await shot('28-추천-칩');
+    await page.locator('form button[type="submit"]').click();
+    await page.waitForSelector('.backdrop', { state: 'detached' });
+    assert.equal(await rewardOf('일기 한 줄 쓰기'), '+5 XP · +2 G');
+  });
+
+  await step('[6단계] 추천을 고른 뒤 이름을 직접 고치면 연결이 끊겨, 난이도를 바꿔도 이름이 그대로다', async () => {
+    await setClock('2026-11-23T09:11:00');
+    await page.locator('#view-today .section-head [data-action="add-habit"]').click();
+    await page.locator('.sug-tab', { hasText: '생활' }).click();
+    await page.locator('.sug-chip', { hasText: '정리' }).click();
+    assert.equal(await page.inputValue('[name="name"]'), '정리 15분');
+    await page.fill('[name="name"]', '책상 정리 15분');
+    assert.equal(await page.locator('.sug-chip.is-on').count(), 0);
+    assert.equal(await page.locator('.seg .amount').count(), 0);
+    await page.locator('.sheet .seg label', { hasText: '어려움' }).click();
+    assert.equal(await page.inputValue('[name="name"]'), '책상 정리 15분');
+    await page.locator('form button[type="submit"]').click();
+    await page.waitForSelector('.backdrop', { state: 'detached' });
+    assert.equal(await rewardOf('책상 정리 15분'), '+20 XP · +8 G');
+  });
+
+  await step('[6단계] 추천에서 온 습관은 수정 화면에서 난이도를 바꾸면 이름도 바뀌고, 담은 추천은 "추가됨"으로 표시된다', async () => {
+    await tab('settings');
+    await page.locator('.manage-list li', { hasText: '산책 10분' }).locator('[data-action="edit-habit"]').click();
+    assert.equal(await page.locator('.sug-chip').count(), 0); // 수정 화면에는 추천 칩이 없다
+    assert.deepEqual(await page.locator('.seg .amount').allTextContents(), ['10분', '30분', '1시간']);
+    await page.locator('.sheet .seg label', { hasText: '보통' }).click();
+    assert.equal(await page.inputValue('[name="name"]'), '산책 30분');
+    await page.locator('form button[type="submit"]').click();
+    await page.waitForSelector('.backdrop', { state: 'detached' });
+    assert.match(await page.locator('.manage-list').textContent(), /산책 30분\s*운동 · 보통 · 매일/);
+
+    await page.locator('#view-settings [data-action="suggest"]').click();
+    // 산책·책 읽기·물 마시기·일기는 추가됨. 이름을 고친 '책상 정리'는 추천과 끊겼으므로 '정리'는 다시 고를 수 있다.
+    assert.equal(await page.locator('.sug-row.is-used').count(), 4);
+    assert.equal(await page.locator('.sug-row.is-used', { hasText: '정리' }).count(), 0);
+    await page.locator('.sheet [data-cancel]').click();
+    await page.reload(); // 다시 열어도 그대로
+    await page.waitForSelector('.habit');
+    assert.deepEqual(await page.locator('.habit-name').allTextContents(),
+      ['산책 30분', '책 10쪽 읽기', '물 300ml 마시기', '일기 한 줄 쓰기', '책상 정리 15분']);
+
+    // 다음 시험을 위해 다시 빈 상태로 되돌린다
+    await tab('settings');
+    await page.locator('[data-action="reset"]').click();
+    await page.locator('[data-answer="yes"]').click();
+    await page.locator('[data-answer="yes"]').click();
+    await page.waitForSelector('.empty-today');
+  });
+
   await step('[2단계] 열흘 만에 열어도 벌칙은 3일치(−45)까지만: HP 50 → 5', async () => {
     await openAt('2026-11-23T09:00:00');
     minute = 0;
@@ -808,7 +901,7 @@ async function step(name, fn) {
     await page.waitForSelector('.habit');
     const before = await hero();
     assert.equal(await page.locator('#update-banner').isHidden(), true);
-    assert.deepEqual(await page.evaluate(() => caches.keys()), ['habit-rpg-v2']);
+    assert.deepEqual(await page.evaluate(() => caches.keys()), ['habit-rpg-v3']);
 
     pretendNewVersion = true;
     await page.evaluate(async () => (await navigator.serviceWorker.getRegistration()).update());
@@ -828,7 +921,7 @@ async function step(name, fn) {
     await page.waitForSelector('.habit');
     assert.equal(await page.evaluate(() => Boolean(navigator.serviceWorker.controller)), true);
     const cached = await page.evaluate(async () => (await (await caches.open((await caches.keys())[0])).keys()).length);
-    assert.equal(cached, 16); // 앱 파일 16개가 기기에 저장되어 있다
+    assert.equal(cached, 17); // 앱 파일 17개가 기기에 저장되어 있다
 
     await context.setOffline(true);
     server.close(); // 서버까지 꺼서 정말로 받아 올 곳이 없게 한다

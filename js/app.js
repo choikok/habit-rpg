@@ -5,6 +5,7 @@ import { characterSVG, iconViewBox } from './character.js';
 import { describeBackup, exportData, importData } from './backup.js';
 import * as B from './battle.js';
 import { monsterSVG } from './monsters.js';
+import { SUGGESTIONS, suggestionList } from './suggestions.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) =>
@@ -169,8 +170,9 @@ function renderToday({ justDoneId } = {}) {
     list.innerHTML = '<li class="empty-today">오늘은 예정된 습관이 없어요.<br>푹 쉬고 내일 만나요!</li>';
   } else {
     list.innerHTML = `
-      <li class="empty-today">아직 습관이 없어요.<br>첫 습관을 만들어 모험을 시작해 보세요!
-        <br><button type="button" class="btn primary" data-action="add-habit">+ 첫 습관 만들기</button></li>`;
+      <li class="empty-today">아직 습관이 없어요.<br>추천에서 고르면 입력 없이 바로 시작할 수 있어요.
+        <br><button type="button" class="btn primary" data-action="suggest">✨ 추천 습관 고르기</button>
+        <br><button type="button" class="link-btn" data-action="add-habit">직접 만들기</button></li>`;
   }
   if (justDoneId) $(`[data-id="${justDoneId}"]`, list)?.classList.add('just-done');
 
@@ -451,9 +453,25 @@ function openHabitForm(habit) {
         <span>${label}${sub ? `<small>${sub}</small>` : ''}</span>
       </label>`).join('');
 
+  // 추천: 새 습관을 만들 때만 고를 수 있다. 수정할 때는 연결만 유지한다.
+  let tpl = habit?.templateId ?? null;
+  const used = G.usedTemplateIds(state);
+  const chips = (category) => suggestionList().filter((s) => s.category === category).map((s) => `
+    <button type="button" class="sug-chip" data-tpl="${s.id}"${used.has(s.id) ? ' disabled' : ''}>
+      ${s.emoji} ${s.title}${used.has(s.id) ? ' ✓' : ''}</button>`).join('');
+  const suggestBox = habit ? '' : `
+      <fieldset class="field">
+        <legend>추천에서 고르기</legend>
+        <div class="sug-tabs">
+          ${Object.entries(G.CATEGORY).map(([k, c], i) => `
+            <button type="button" class="sug-tab cat-${k}${i ? '' : ' is-on'}" data-sug-cat="${k}">${c.label}</button>`).join('')}
+        </div>
+        <div class="sug-chips" id="sug-chips">${chips(Object.keys(G.CATEGORY)[0])}</div>
+      </fieldset>`;
+
   const { el, close } = openOverlay(`
     <form class="sheet" role="dialog" aria-modal="true" aria-label="${habit ? '습관 수정' : '습관 추가'}" novalidate>
-      <h2>${habit ? '습관 수정' : '새 습관'}</h2>
+      <h2>${habit ? '습관 수정' : '새 습관'}</h2>${suggestBox}
       <label class="field">
         <span>이름</span>
         <input type="text" name="name" maxlength="${G.NAME_MAX}" value="${esc(v.name)}" placeholder="예: 물 마시기" autocomplete="off">
@@ -490,6 +508,45 @@ function openHabitForm(habit) {
   $('[data-every-day]', form).addEventListener('click', () => {
     form.querySelectorAll('[name="days"]').forEach((box) => (box.checked = true));
   });
+
+  const nameInput = $('[name="name"]', form);
+  const difficulty = () => new FormData(form).get('difficulty');
+  // 난이도 버튼마다 그 난이도의 분량(예: 300ml)을 보여 주고, 고른 추천 칩을 표시한다
+  const showTemplate = () => {
+    for (const radio of form.querySelectorAll('[name="difficulty"]')) {
+      const span = radio.nextElementSibling;
+      $('.amount', span)?.remove();
+      if (tpl) $('small', span).insertAdjacentHTML('beforebegin', `<small class="amount">${SUGGESTIONS[tpl].levels[radio.value].short}</small>`);
+    }
+    for (const chip of form.querySelectorAll('.sug-chip')) chip.classList.toggle('is-on', chip.dataset.tpl === tpl);
+  };
+  form.addEventListener('click', (e) => {
+    const tab = e.target.closest('[data-sug-cat]');
+    if (tab) {
+      for (const t of form.querySelectorAll('.sug-tab')) t.classList.toggle('is-on', t === tab);
+      $('#sug-chips', form).innerHTML = chips(tab.dataset.sugCat);
+      showTemplate();
+      return;
+    }
+    const chip = e.target.closest('.sug-chip');
+    if (!chip) return;
+    tpl = chip.dataset.tpl;
+    nameInput.value = SUGGESTIONS[tpl].levels[difficulty()].name;
+    $(`[name="category"][value="${SUGGESTIONS[tpl].category}"]`, form).checked = true;
+    showTemplate();
+  });
+  form.addEventListener('change', (e) => {
+    // 추천과 연결된 습관은 난이도를 바꾸면 이름(분량)도 따라 바뀐다
+    if (e.target.name === 'difficulty' && tpl) nameInput.value = SUGGESTIONS[tpl].levels[difficulty()].name;
+  });
+  nameInput.addEventListener('input', () => {
+    // 이름을 직접 고치면 추천과의 연결을 끊는다
+    if (tpl && nameInput.value.trim() !== SUGGESTIONS[tpl].levels[difficulty()].name) {
+      tpl = null;
+      showTemplate();
+    }
+  });
+  showTemplate();
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const data = new FormData(form);
@@ -498,6 +555,7 @@ function openHabitForm(habit) {
       difficulty: data.get('difficulty'),
       category: data.get('category'),
       days: data.getAll('days').map(Number),
+      templateId: tpl,
     };
     const levelBefore = state.player.level;
     let perfect = null;
@@ -514,7 +572,69 @@ function openHabitForm(habit) {
     close();
     afterHabitChange(habit ? '습관을 수정했어요.' : '습관을 추가했어요.', perfect, levelBefore);
   });
-  if (!habit) $('[name="name"]', form).focus();
+}
+
+/** 추천 습관 여러 개를 한 번에 담는 화면 */
+function openSuggestionSheet() {
+  const used = G.usedTemplateIds(state);
+  const groups = Object.entries(G.CATEGORY).map(([category, c]) => `
+      <fieldset class="field">
+        <legend>${c.label}</legend>
+        <div class="sug-list cat-${category}">
+          ${suggestionList().filter((s) => s.category === category).map((s) => `
+            <label class="sug-row${used.has(s.id) ? ' is-used' : ''}">
+              <input type="checkbox" name="tpl" value="${s.id}"${used.has(s.id) ? ' disabled' : ''}>
+              <span class="sug-emoji">${s.emoji}</span>
+              <span class="sug-name" data-name="${s.id}"></span>
+              <span class="sug-mark">${used.has(s.id) ? '추가됨' : '✓'}</span>
+            </label>`).join('')}
+        </div>
+      </fieldset>`).join('');
+
+  const { el, close } = openOverlay(`
+    <form class="sheet" role="dialog" aria-modal="true" aria-label="추천 습관 담기" novalidate>
+      <h2>추천 습관 담기</h2>
+      <p class="muted">하고 싶은 것을 고르면 한 번에 추가돼요. 매일 반복으로 들어가고, 이름·난이도·요일은 나중에 설정에서 바꿀 수 있어요.</p>
+      <fieldset class="field">
+        <legend>난이도</legend>
+        <div class="seg cols-3">
+          ${Object.entries(G.DIFFICULTY).map(([k, d]) => `
+            <label><input type="radio" name="difficulty" value="${k}"${k === 'easy' ? ' checked' : ''}>
+              <span>${d.label}<small>+${d.xp} XP · +${d.gold} G</small></span></label>`).join('')}
+        </div>
+        <p class="muted note">처음에는 쉬움으로 시작하고, 익숙해지면 올리는 걸 권해요.</p>
+      </fieldset>
+      ${groups}
+      <div class="form-actions is-sticky">
+        <button type="button" class="btn" data-cancel>취소</button>
+        <button type="submit" class="btn primary" disabled>습관을 골라 주세요</button>
+      </div>
+    </form>`);
+
+  const form = $('form', el);
+  const submit = $('[type="submit"]', form);
+  const refresh = () => {
+    const data = new FormData(form);
+    for (const node of form.querySelectorAll('[data-name]')) {
+      node.textContent = SUGGESTIONS[node.dataset.name].levels[data.get('difficulty')].name;
+    }
+    const count = data.getAll('tpl').length;
+    submit.disabled = count === 0;
+    submit.textContent = count ? `${count}개 추가` : '습관을 골라 주세요';
+  };
+  form.addEventListener('change', refresh);
+  $('[data-cancel]', form).addEventListener('click', close);
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const data = new FormData(form);
+    const added = G.addSuggested(state, data.getAll('tpl'), data.get('difficulty'), now());
+    if (!added.length) return;
+    save();
+    close();
+    switchTab('today');
+    afterHabitChange(`습관 ${added.length}개를 추가했어요.`, null, state.player.level);
+  });
+  refresh();
 }
 
 /** 습관을 추가·수정·삭제한 뒤 화면을 다시 그린다. 그 결과로 오늘이 '완벽한 하루'가 됐으면 알려 준다. */
@@ -981,7 +1101,10 @@ function renderSettings() {
     <div class="card">
       <h2>습관 관리</h2>
       ${habits.length ? `<ul class="manage-list">${rows}</ul>` : '<p class="muted">아직 만든 습관이 없어요.</p>'}
-      <button type="button" class="btn primary block" data-action="add-habit">+ 습관 추가</button>
+      <div class="btn-row">
+        <button type="button" class="btn primary" data-action="add-habit">+ 습관 추가</button>
+        <button type="button" class="btn" data-action="suggest">✨ 추천에서 담기</button>
+      </div>
     </div>
     <div class="card">
       <h2>하루 기준 시각</h2>
@@ -1101,6 +1224,7 @@ function syncDay() {
 const ACTIONS = {
   'toggle': (el) => toggleHabit(el),
   'add-habit': () => openHabitForm(null),
+  'suggest': () => openSuggestionSheet(),
   'edit-habit': (el) => openHabitForm(state.habits[el.dataset.id]),
   'delete-habit': (el) => removeHabit(el.dataset.id),
   'reset': () => resetAll(),
