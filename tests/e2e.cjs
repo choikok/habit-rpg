@@ -12,6 +12,8 @@ const SHOTS = process.argv[2];
 const BASE = process.env.E2E_BASE || '/';
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json', '.png': 'image/png' };
 
+let pretendNewVersion = false; // true 면 sw.js 를 다음 버전인 것처럼 내보낸다 (앱 갱신 시험용)
+
 function serve() {
   const server = http.createServer((req, res) => {
     const full = decodeURIComponent(new URL(req.url, 'http://x').pathname);
@@ -20,6 +22,9 @@ function serve() {
     const file = path.join(ROOT, rel.endsWith('/') ? rel + 'index.html' : rel);
     if (!file.startsWith(ROOT) || !fs.existsSync(file)) return res.writeHead(404).end();
     res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream' });
+    if (pretendNewVersion && file.endsWith('sw.js')) {
+      return res.end(fs.readFileSync(file, 'utf8').replace(/const VERSION = '[^']+'/, "const VERSION = 'next'"));
+    }
     fs.createReadStream(file).pipe(res);
   });
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
@@ -88,22 +93,31 @@ async function step(name, fn) {
   };
 
   /** 시험 준비용: 저장된 플레이어 값을 직접 바꾸고 앱을 다시 연다 (레벨 15까지 실제로 키우려면 수십 일이 걸리므로) */
-  const seedPlayer = async (patch) => {
-    await page.evaluate((patch) => new Promise((resolve, reject) => {
+  const seedMeta = async (key, patch) => {
+    await page.evaluate(([key, patch]) => new Promise((resolve, reject) => {
       const req = indexedDB.open('habit-rpg');
       req.onsuccess = () => {
         const db = req.result;
         const tx = db.transaction('meta', 'readwrite');
         const store = tx.objectStore('meta');
-        const get = store.get('player');
-        get.onsuccess = () => store.put({ ...get.result, ...patch });
+        if (patch === null) store.delete(key); // 그 항목이 아예 없던 예전 데이터를 흉내 낸다
+        else {
+          const get = store.get(key);
+          get.onsuccess = () => store.put({ key, ...get.result, ...patch });
+        }
         tx.oncomplete = () => { db.close(); resolve(); };
         tx.onerror = () => reject(tx.error);
       };
-    }), patch);
+    }), [key, patch]);
     await page.reload();
     await page.waitForSelector('#today-date:not(:empty)');
   };
+  const seedPlayer = (patch) => seedMeta('player', patch);
+  const battleResult = async () => {
+    await page.waitForSelector('#arena-result[data-result]');
+    return page.locator('#arena-result').getAttribute('data-result');
+  };
+  const tickets = () => page.textContent('#battle-tickets');
   const tab = (name) => page.locator(`.tabbar [data-tab="${name}"]`).click();
   const item = (id) => page.locator(`.item[data-item="${id}"]`);
   const wearing = () => page.locator('#hero-char svg').getAttribute('data-items');
@@ -573,7 +587,7 @@ async function step(name, fn) {
     await download.saveAs(backupFile);
     const data = JSON.parse(fs.readFileSync(backupFile, 'utf8'));
     assert.equal(data.app, 'habit-rpg');
-    assert.equal(data.version, 1);
+    assert.equal(data.version, 2);
     assert.deepEqual(data.habits.map((h) => h.name), ['물 마시기', '산책', '책 읽기']);
     assert.equal(data.completions.length, 9);
     assert.deepEqual(data.gear.equipped, { head: 'head4', body: 'body4', weapon: 'weapon4', accessory: 'accessory4' });
@@ -662,13 +676,159 @@ async function step(name, fn) {
     assert.deepEqual(sizes, [192, 512, 512, 180]);
   });
 
+  await step('[5단계] 전투 탭: 다음 스테이지와 내 능력치(레벨 + 낀 장비), 전투 기회가 보인다', async () => {
+    await page.goto(`${url}?debug&speed=8`); // 시험에서는 전투를 8배 빠르게 돌린다
+    await page.waitForSelector('#today-date:not(:empty)');
+    await seedMeta('battle', { cleared: 0, tickets: 10, wins: 0, losses: 0 });
+    assert.equal(await page.textContent('#battle-badge'), '10');
+    await tab('battle');
+    assert.equal(await page.textContent('#stage-label'), '스테이지 1');
+    assert.equal(await page.textContent('#stage-name'), '말랑 젤리');
+    // Lv15: 공격 6 + 30, 체력 80 + 150 / 별빛 장비 4종: 공격 +30, 방어 6 + 14, 쿨타임 −20%, 피버 3 + 12
+    assert.deepEqual(
+      await Promise.all(['atk', 'def', 'hp', 'cd', 'fever'].map((k) => page.textContent(`#bs-${k}`))),
+      ['66', '20', '230', '6.4초', '15%'],
+    );
+    assert.equal(await tickets(), '10');
+    await shot('21-전투-대기');
+  });
+
+  await step('[5단계] 승리: 골드를 받고 다음 스테이지가 열린다 (경험치·HP는 그대로)', async () => {
+    const before = await hero();
+    const hpBefore = await hp();
+    await page.locator('[data-action="battle-start"]').click();
+    assert.equal(await battleResult(), 'win');
+    assert.match(await page.textContent('#arena-result'), /승리!\s*\+3 G/);
+    assert.match(await page.textContent('#arena-result'), /다음은 스테이지 2 · 성난 버섯/);
+    await page.waitForTimeout(500);
+    await shot('23-전투-승리');
+    await page.locator('#arena-result [data-again]').click(); // 다음 스테이지로 바로 이어서
+    await page.waitForSelector('#arena-result', { state: 'hidden' });
+    assert.equal(await battleResult(), 'win');
+    assert.match(await page.textContent('#arena-result'), /\+4 G/);
+    await page.locator('#arena-result [data-close]').click();
+    assert.equal(await page.locator('.arena').count(), 0);
+    assert.equal(await page.textContent('#stage-label'), '스테이지 3');
+    assert.equal(await tickets(), '8');
+    assert.match(await page.textContent('#battle-record'), /2승 0패/);
+    const after = await hero();
+    assert.equal(Number(after.gold.replace(',', '')), Number(before.gold.replace(',', '')) + 7);
+    assert.deepEqual([after.level, after.xp, await hp()], [before.level, before.xp, hpBefore]);
+  });
+
+  await step('[5단계] 스킬: 쿨타임이 차면 버튼이 켜지고, 누르면 "강타!"가 나간 뒤 다시 쿨타임이 돈다', async () => {
+    await seedMeta('battle', { cleared: 19, tickets: 5 });
+    await tab('battle');
+    assert.equal(await page.textContent('#stage-name'), '어둠의 불꽃 도깨비 대장');
+    assert.match(await page.locator('.stage-card').getAttribute('class'), /is-boss/);
+    await page.locator('[data-action="battle-start"]').click();
+    assert.equal(await page.locator('#skill-btn').isDisabled(), true); // 처음에는 쿨타임 중
+    await page.waitForSelector('#skill-btn.is-ready');
+    await shot('22-전투-중');
+    await page.locator('#skill-btn').click();
+    await page.waitForSelector('.dmg.skill', { state: 'attached' });
+    // 공격력 66 × 3 − 방어 4 = 194
+    assert.equal(await page.locator('.dmg.skill').first().textContent(), '강타! 194');
+    await page.waitForSelector('#skill-btn:not(.is-ready)');
+    assert.ok(['win', 'lose'].includes(await battleResult()));
+    await page.locator('#arena-result [data-close]').click();
+  });
+
+  await step('[5단계] 패배: 전투 기회만 줄고 골드·경험치·HP·스테이지는 그대로다', async () => {
+    await seedMeta('battle', { cleared: 59, tickets: 2, wins: 0, losses: 0 });
+    const before = [await hero(), await hp()];
+    await tab('battle');
+    await page.locator('[data-action="battle-start"]').click();
+    assert.equal(await battleResult(), 'lose');
+    assert.match(await page.textContent('#arena-result'), /패배\s*잃은 것은 없어요/);
+    await page.waitForTimeout(400);
+    await shot('24-전투-패배');
+    await page.locator('#arena-result [data-close]').click();
+    assert.deepEqual([await hero(), await hp()], before);
+    assert.equal(await page.textContent('#stage-label'), '스테이지 60 · 보스');
+    assert.equal(await tickets(), '1');
+    assert.match(await page.textContent('#battle-record'), /0승 1패/);
+  });
+
+  await step('[5단계] 전투 기회가 없으면 시작할 수 없고, 습관을 완료하면 생긴다 (취소하면 되돌아감)', async () => {
+    await seedMeta('battle', { cleared: 2, tickets: 0 });
+    assert.equal(await page.locator('#battle-badge').isHidden(), true);
+    await tab('battle');
+    assert.equal(await page.locator('[data-action="battle-start"]').isDisabled(), true);
+    assert.equal(await tickets(), '0');
+    await tab('today');
+    await habit('책 읽기').click(); // 습관 +1, 오늘 3/3 완벽한 하루 +1
+    assert.equal(await page.textContent('#battle-badge'), '2');
+    await tab('battle');
+    assert.equal(await page.locator('[data-action="battle-start"]').isEnabled(), true);
+    assert.equal(await tickets(), '2');
+    await tab('today');
+    await habit('책 읽기').click(); // 취소
+    assert.equal(await page.locator('#battle-badge').isHidden(), true);
+    await page.reload(); // 전투 진행 상황은 저장되어 있다
+    await page.waitForSelector('.habit');
+    await tab('battle');
+    assert.equal(await page.textContent('#stage-label'), '스테이지 3');
+  });
+
+  await step('[5단계] 상점 장비에 전투 능력치가 표시되고, 끼고 벗으면 내 능력치가 바뀐다', async () => {
+    await tab('shop');
+    const stats = (id) => item(id).locator('.item-stats').textContent();
+    assert.equal(await stats('weapon1'), '공격 +4');
+    assert.equal(await stats('head4'), '방어 +6 · 쿨타임 −20%');
+    assert.equal(await stats('body3'), '방어 +9');
+    assert.equal(await stats('accessory4'), '피버 +12%');
+    assert.match(await item('head1').locator('.item-effect').textContent(), /경험치 \+2%/); // 경험치 효과도 그대로
+    await page.waitForTimeout(300);
+    await shot('25-상점-능력치');
+    await item('weapon4').locator('[data-action="unequip"]').click();
+    await tab('battle');
+    assert.equal(await page.textContent('#bs-atk'), '36');
+    await tab('shop');
+    await item('weapon4').locator('[data-action="equip"]').click();
+    await tab('battle');
+    assert.equal(await page.textContent('#bs-atk'), '66');
+  });
+
+  await step('[5단계] 전투가 없던 예전 데이터로 열어도 그대로 열리고, 전투 기회 3번으로 시작한다', async () => {
+    const before = await hero();
+    await seedMeta('battle', null);
+    assert.deepEqual(await hero(), before);
+    assert.equal(await page.locator('.habit').count(), 3);
+    assert.equal(await wearing(), 'head4 body4 weapon4 accessory4');
+    await tab('battle');
+    assert.equal(await page.textContent('#stage-label'), '스테이지 1');
+    assert.equal(await tickets(), '3');
+    await tab('today');
+  });
+
+  await step('앱 갱신: 새 버전이 올라오면 "새 버전" 안내가 뜨고, 누르면 새 파일로 바뀌며 데이터는 그대로다', async () => {
+    await page.evaluate(() => navigator.serviceWorker.ready);
+    await page.reload(); // 이미 설치된 상태로 다시 연 상황
+    await page.waitForSelector('.habit');
+    const before = await hero();
+    assert.equal(await page.locator('#update-banner').isHidden(), true);
+    assert.deepEqual(await page.evaluate(() => caches.keys()), ['habit-rpg-v2']);
+
+    pretendNewVersion = true;
+    await page.evaluate(async () => (await navigator.serviceWorker.getRegistration()).update());
+    await page.waitForSelector('#update-banner:not([hidden])');
+    await shot('26-새-버전-안내');
+    await page.locator('#update-banner').click();
+    await page.waitForSelector('.habit');
+    assert.deepEqual(await page.evaluate(() => caches.keys()), ['habit-rpg-next']); // 예전 파일 묶음은 지워진다
+    assert.equal(await page.locator('#update-banner').isHidden(), true);
+    assert.deepEqual(await hero(), before);
+    assert.equal(await page.locator('.habit').count(), 3);
+  });
+
   await step('[4단계] 오프라인: 인터넷을 끊고 다시 열어도 앱이 뜨고, 체크와 저장이 된다', async () => {
     await page.evaluate(() => navigator.serviceWorker.ready);
     await page.reload();
     await page.waitForSelector('.habit');
     assert.equal(await page.evaluate(() => Boolean(navigator.serviceWorker.controller)), true);
     const cached = await page.evaluate(async () => (await (await caches.open((await caches.keys())[0])).keys()).length);
-    assert.equal(cached, 14); // 앱 파일 14개가 기기에 저장되어 있다
+    assert.equal(cached, 16); // 앱 파일 16개가 기기에 저장되어 있다
 
     await context.setOffline(true);
     server.close(); // 서버까지 꺼서 정말로 받아 올 곳이 없게 한다

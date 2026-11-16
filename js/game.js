@@ -2,6 +2,8 @@
 // 브라우저와 Node(시험)에서 똑같이 돌아간다.
 // 상태를 바꾼 함수는 바뀐 레코드를 state.dirty 에 적어 두고, 저장은 db.js 가 맡는다.
 
+import { monsterFor } from './battle.js';
+
 export const DIFFICULTY = {
   easy: { label: '쉬움', xp: 5, gold: 2 },
   normal: { label: '보통', xp: 10, gold: 4 },
@@ -49,11 +51,26 @@ const ITEM_NAMES = {
   weapon: ['나무 검', '무쇠 검', '기사의 검', '별빛 검'],
   accessory: ['행운의 목도리', '은빛 목걸이', '바람 망토', '별빛 날개'],
 };
+// 전투 능력치(단계 1~4). 머리: 방어력 + 스킬 쿨타임 감소, 몸: 방어력, 무기: 공격력, 장신구: 피버 발동 확률.
+const ITEM_STATS = {
+  head: [{ def: 1, cooldownPct: 5 }, { def: 2, cooldownPct: 10 }, { def: 4, cooldownPct: 15 }, { def: 6, cooldownPct: 20 }],
+  body: [{ def: 2 }, { def: 5 }, { def: 9 }, { def: 14 }],
+  weapon: [{ atk: 4 }, { atk: 10 }, { atk: 18 }, { atk: 30 }],
+  accessory: [{ feverPct: 3 }, { feverPct: 6 }, { feverPct: 9 }, { feverPct: 12 }],
+};
 /** 장비 16종. id 는 'head1' 처럼 부위 + 단계. */
 export const ITEMS = Object.fromEntries(
   Object.keys(SLOTS).flatMap((slot) =>
-    TIERS.map((t, i) => [`${slot}${t.tier}`, { id: `${slot}${t.tier}`, slot, name: ITEM_NAMES[slot][i], ...t }])),
+    TIERS.map((t, i) => [`${slot}${t.tier}`, {
+      id: `${slot}${t.tier}`, slot, name: ITEM_NAMES[slot][i], ...t, stats: ITEM_STATS[slot][i],
+    }])),
 );
+
+// 전투
+export const BASE_FEVER_PCT = 3; // 장신구가 없어도 공격할 때마다 3% 확률로 피버
+export const TICKET_PER_HABIT = 1; // 습관 하나 완료 = 전투 기회 1
+export const TICKET_PER_PERFECT_DAY = 1; // 완벽한 하루 = 전투 기회 1 추가
+export const START_TICKETS = 3; // 처음에 바로 해 볼 수 있도록
 
 const HOUR_MS = 3600000;
 const DAY_MS = 86400000;
@@ -95,6 +112,8 @@ export const defaultGear = () => ({
   equipped: { head: null, body: null, weapon: null, accessory: null },
   carry: 0,
 });
+// cleared: 깬 스테이지 수(다음에 싸울 스테이지는 cleared + 1), tickets: 남은 전투 기회
+export const defaultBattle = () => ({ cleared: 0, tickets: START_TICKETS, wins: 0, losses: 0 });
 export const defaultSettings = () => ({ dayStartHour: 4, debugOffsetMs: 0, lastBackupAt: null });
 
 export function createState() {
@@ -103,6 +122,7 @@ export function createState() {
     settings: defaultSettings(),
     progress: defaultProgress(),
     gear: defaultGear(),
+    battle: defaultBattle(),
     habits: {}, // id → 습관
     completions: {}, // '날짜|습관id' → 완료 기록
     days: {}, // 날짜 → 그날의 기록(완벽한 하루 보너스 등)
@@ -115,6 +135,7 @@ function mark(state, store, key, value) {
 }
 const markPlayer = (state) => mark(state, 'meta', 'player', { key: 'player', ...state.player });
 const markProgress = (state) => mark(state, 'meta', 'progress', { key: 'progress', ...state.progress });
+const markBattle = (state) => mark(state, 'meta', 'battle', { key: 'battle', ...state.battle });
 const markGear = (state) => mark(state, 'meta', 'gear', { key: 'gear', ...state.gear });
 const markSettings = (state) => mark(state, 'meta', 'settings', { key: 'settings', ...state.settings });
 
@@ -289,6 +310,8 @@ function awardPerfectIfDue(state, day) {
   gainXp(state, PERFECT_DAY.xp);
   state.player.gold += PERFECT_DAY.gold;
   markPlayer(state);
+  state.battle.tickets += TICKET_PER_PERFECT_DAY;
+  markBattle(state);
   return rec.perfect;
 }
 
@@ -318,6 +341,9 @@ export function checkHabit(state, habitId, nowMs) {
   markPlayer(state);
   const perfect = awardPerfectIfDue(state, day);
   rec.hp = state.player.hp - hpBefore; // 취소할 때 되돌릴 HP 변화량(레벨 업으로 채워진 것 포함)
+  rec.tickets = TICKET_PER_HABIT;
+  state.battle.tickets += TICKET_PER_HABIT;
+  markBattle(state);
 
   return {
     ok: true,
@@ -355,12 +381,16 @@ export function uncheckHabit(state, habitId, nowMs) {
   }
   const dayRec = state.days[day];
   const perfect = dayRec?.perfect ?? null;
+  // 받았던 전투 기회도 되돌린다. 이미 써 버렸다면 음수가 되고, 다시 채울 때까지 전투할 수 없다.
+  state.battle.tickets -= rec.tickets ?? 0;
   if (perfect) {
     xp += perfect.xp;
     gold += perfect.gold;
     dayRec.perfect = null;
     mark(state, 'days', day, dayRec);
+    state.battle.tickets -= TICKET_PER_PERFECT_DAY;
   }
+  markBattle(state);
   const levelBefore = state.player.level;
   takeBackXp(state, xp);
   state.player.gold -= gold;
@@ -402,6 +432,46 @@ export function equipItem(state, slot, itemId) {
 /** 레벨이 오르면서 상점에 새로 열린 장비 단계들 */
 export const tiersUnlockedBetween = (levelBefore, levelAfter) =>
   TIERS.filter((t) => t.level > levelBefore && t.level <= levelAfter);
+
+// ───────── 전투 ─────────
+
+/** 캐릭터의 전투 능력치: 레벨 기본값 + 낀 장비 */
+export function battleStats(state) {
+  const { level } = state.player;
+  const s = { maxHp: 80 + 10 * level, atk: 6 + 2 * level, def: 0, cooldownPct: 0, feverPct: BASE_FEVER_PCT };
+  for (const id of Object.values(state.gear.equipped)) {
+    if (!id) continue;
+    for (const [key, value] of Object.entries(ITEMS[id].stats)) s[key] += value;
+  }
+  return s;
+}
+
+export const nextStage = (state) => state.battle.cleared + 1;
+
+/** 전투 기회 하나를 쓰고 전투를 시작한다. 중간에 나가도 기회는 돌아오지 않는다. */
+export function beginBattle(state) {
+  if (state.battle.tickets < 1) return { ok: false, reason: 'no-ticket' };
+  state.battle.tickets -= 1;
+  markBattle(state);
+  return { ok: true, stage: nextStage(state), player: battleStats(state), monster: monsterFor(nextStage(state)) };
+}
+
+/** 전투 결과를 반영한다. 이기면 골드를 받고 다음 스테이지가 열린다. 져도 잃는 것은 없다. */
+export function finishBattle(state, stage, won) {
+  if (stage !== nextStage(state)) return { ok: false, reason: 'stale' };
+  let gold = 0;
+  if (won) {
+    gold = monsterFor(stage).gold;
+    state.battle.cleared = stage;
+    state.battle.wins += 1;
+    state.player.gold += gold;
+    markPlayer(state);
+  } else {
+    state.battle.losses += 1;
+  }
+  markBattle(state);
+  return { ok: true, won, gold };
+}
 
 // ───────── 휴식일 ─────────
 

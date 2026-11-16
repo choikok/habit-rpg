@@ -1,6 +1,6 @@
 // 서비스 워커: 앱 파일을 기기에 저장해 두고, 인터넷이 없어도 저장해 둔 파일로 앱을 연다.
 // 앱 파일을 고쳐서 다시 올릴 때는 아래 VERSION 을 바꿔야 사용자 기기에 새 파일이 내려간다.
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = `habit-rpg-${VERSION}`;
 const FILES = [
   './',
@@ -12,6 +12,8 @@ const FILES = [
   'js/db.js',
   'js/character.js',
   'js/backup.js',
+  'js/battle.js',
+  'js/monsters.js',
   'icons/icon.svg',
   'icons/icon-192.png',
   'icons/icon-512.png',

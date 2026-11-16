@@ -3,7 +3,7 @@
 import { CATEGORY, DIFFICULTY, HP_MAX, ITEMS, NAME_MAX, SLOTS, createState } from './game.js';
 
 export const BACKUP_APP = 'habit-rpg';
-export const BACKUP_VERSION = 1;
+export const BACKUP_VERSION = 2; // 2: 전투(battle) 추가. 1 버전 파일도 그대로 가져올 수 있다.
 
 /** 현재 상태를 백업용 객체로 만든다. */
 export function exportData(state, nowMs) {
@@ -15,6 +15,7 @@ export function exportData(state, nowMs) {
     settings: { dayStartHour: state.settings.dayStartHour },
     progress: { lastDay: state.progress.lastDay },
     gear: { owned: [...state.gear.owned], equipped: { ...state.gear.equipped }, carry: state.gear.carry },
+    battle: { ...state.battle },
     habits: Object.values(state.habits),
     completions: Object.values(state.completions),
     days: Object.values(state.days),
@@ -54,8 +55,9 @@ function readCompletion(c, i) {
   if (!isObj(c) || !isDay(c.day) || !isHabitId(c.habitId) || c.id !== `${c.day}|${c.habitId}`) fail(where);
   if (!isInt(c.xp, 0, BIG) || !isInt(c.gold, 0, BIG)) fail(where);
   if (!optInt(c.hp, -HP_MAX, HP_MAX) || !optInt(c.equipCarry, 0, BIG) || !optInt(c.equipXp, 0, BIG)) fail(where);
+  if (!optInt(c.tickets, 0, 100)) fail(where);
   const rec = { id: c.id, day: c.day, habitId: c.habitId, at: Number.isFinite(c.at) ? c.at : 0, xp: c.xp, gold: c.gold };
-  for (const key of ['hp', 'equipCarry', 'equipXp']) if (c[key] !== undefined) rec[key] = c[key];
+  for (const key of ['hp', 'equipCarry', 'equipXp', 'tickets']) if (c[key] !== undefined) rec[key] = c[key];
   return rec;
 }
 
@@ -113,6 +115,14 @@ export function importData(text) {
     state.gear.equipped[slot] = id;
   }
   state.gear.carry = g.carry;
+
+  if (data.battle !== undefined) {
+    // 전투가 생기기 전(1 버전)에 만든 백업에는 이 항목이 없다. 그때는 기본값으로 시작한다.
+    const b = data.battle;
+    if (!isObj(b) || !isInt(b.cleared, 0, BIG) || !isInt(b.tickets, -BIG, BIG)) fail('전투');
+    if (!isInt(b.wins, 0, BIG) || !isInt(b.losses, 0, BIG)) fail('전투');
+    state.battle = { cleared: b.cleared, tickets: b.tickets, wins: b.wins, losses: b.losses };
+  }
 
   for (const [key, max] of [['habits', 1000], ['completions', 1000000], ['days', 100000]]) {
     if (!Array.isArray(data[key]) || data[key].length > max) fail(key);

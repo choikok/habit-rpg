@@ -95,7 +95,7 @@ test('백업: 내보낸 파일을 가져오면 똑같은 상태가 된다', () =
 
   const text = JSON.stringify(exportData(state, NOV(20, 12)));
   const restored = importData(text);
-  for (const key of ['player', 'gear', 'habits', 'completions', 'days']) {
+  for (const key of ['player', 'gear', 'battle', 'habits', 'completions', 'days']) {
     assert.deepEqual(restored[key], state[key], key);
   }
   assert.equal(restored.settings.dayStartHour, 5);
@@ -110,7 +110,7 @@ test('백업: 파일에는 앱 이름·버전·내보낸 시각이 들어가고,
   G.setDebugOffset(state, 86400000);
   const data = exportData(state, NOV(20, 12));
   assert.equal(data.app, 'habit-rpg');
-  assert.equal(data.version, 1);
+  assert.equal(data.version, 2);
   assert.equal(data.exportedAt, new Date(NOV(20, 12)).toISOString());
   assert.deepEqual(data.settings, { dayStartHour: 4 });
   assert.equal(importData(JSON.stringify(data)).settings.debugOffsetMs, 0);
@@ -127,7 +127,7 @@ test('백업: 잘못된 파일은 거부하고 이유를 알려 준다', () => {
   assert.throws(() => importData('안녕하세요'), /JSON 형식/);
   assert.throws(() => importData('{"hello":1}'), /이 앱에서 내보낸 백업 파일이 아니에요/);
   assert.throws(() => importData('[1,2,3]'), /이 앱에서 내보낸/);
-  assert.throws(() => importData(broken((d) => (d.version = 2))), /더 새로운 버전/);
+  assert.throws(() => importData(broken((d) => (d.version = 3))), /더 새로운 버전/);
   assert.throws(() => importData(broken((d) => (d.player.level = 0))), /캐릭터/);
   assert.throws(() => importData(broken((d) => (d.player.hp = 999))), /캐릭터/);
   assert.throws(() => importData(broken((d) => (d.player.xp = '많이'))), /캐릭터/);

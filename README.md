@@ -57,7 +57,9 @@ npm run test:e2e
 | `js/game.js` | 규칙 전부: 보상, 연속 보너스, 레벨, HP 벌칙, 휴식일, 상점, 통계 |
 | `js/db.js` | IndexedDB 저장 |
 | `js/backup.js` | JSON 백업 내보내기·가져오기와 형식 검사 |
+| `js/battle.js` | 전투 계산: 스테이지, 피해, 스킬, 피버 |
 | `js/character.js` | 캐릭터와 장비 16종 그림(SVG) |
+| `js/monsters.js` | 몬스터 5종 그림(SVG) |
 | `js/app.js` | 화면과 입력 처리 |
 | `sw.js`, `manifest.webmanifest`, `icons/` | 오프라인 동작과 홈 화면 설치 |
 | `tools/make-icons.mjs` | 아이콘 다시 만들기 (`npm run icons`) |

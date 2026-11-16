@@ -3,12 +3,16 @@ import * as G from './game.js';
 import * as DB from './db.js';
 import { characterSVG, iconViewBox } from './character.js';
 import { describeBackup, exportData, importData } from './backup.js';
+import * as B from './battle.js';
+import { monsterSVG } from './monsters.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) =>
   String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
-const DEBUG = new URLSearchParams(location.search).has('debug');
+const PARAMS = new URLSearchParams(location.search);
+const DEBUG = PARAMS.has('debug');
+const BATTLE_SPEED = DEBUG ? Number(PARAMS.get('speed')) || 1 : 1; // 시험할 때 전투를 빨리 돌린다 (?debug&speed=5)
 const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0]; // 월요일부터 보여 준다
 const WEEK_LABEL = ['일', '월', '화', '수', '목', '금', '토'];
 const CHECK_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
@@ -55,6 +59,16 @@ function hourLabel(h) {
 
 /** 받침이 있으면 '을', 없으면 '를' */
 const eul = (word) => ((word.charCodeAt(word.length - 1) - 0xac00) % 28 ? '을' : '를');
+
+/** 장비의 전투 능력치를 한 줄로 */
+function statText(stats) {
+  const parts = [];
+  if (stats.atk) parts.push(`공격 +${stats.atk}`);
+  if (stats.def) parts.push(`방어 +${stats.def}`);
+  if (stats.cooldownPct) parts.push(`쿨타임 −${stats.cooldownPct}%`);
+  if (stats.feverPct) parts.push(`피버 +${stats.feverPct}%`);
+  return parts.join(' · ');
+}
 
 const rewardText = (xp, gold) => `+${xp} XP · +${gold} G`;
 
@@ -257,12 +271,14 @@ function toggleHabit(button) {
   updateHero({ leveledUp });
 
   if (wasDone) {
+    updateBattleBadge();
     spawnFloat(at, `<span class="xp">−${res.xp} XP</span><span class="g">−${res.gold} G</span>`, 'minus');
     toast(res.perfect ? '체크를 취소했어요. 완벽한 하루 보너스도 되돌렸습니다.' : '체크를 취소하고 보상을 되돌렸어요.');
     return;
   }
 
   spawnFloat(at, `<span class="xp">+${res.xp} XP</span><span class="g">+${res.gold} G</span>`);
+  updateBattleBadge(true);
   burst(at, getComputedStyle(button).getPropertyValue('--cat'));
   navigator.vibrate?.(leveledUp ? [30, 40, 60] : res.perfect ? [18, 40, 30] : 18);
   cheer();
@@ -525,6 +541,185 @@ async function removeHabit(id) {
   afterHabitChange('습관을 삭제했어요.', perfect, levelBefore);
 }
 
+// ───────── 전투 화면 ─────────
+
+const stageLabel = (m) => `스테이지 ${m.stage}${m.boss ? ' · 보스' : ''}`;
+
+function updateBattleBadge(pop = false) {
+  const badge = $('#battle-badge');
+  const tickets = Math.max(0, state.battle.tickets);
+  badge.hidden = tickets === 0;
+  badge.textContent = tickets > 99 ? '99+' : tickets;
+  if (pop && tickets) replay(badge, 'bump');
+}
+
+function renderBattle() {
+  updateBattleBadge();
+  const m = B.monsterFor(G.nextStage(state));
+  const p = G.battleStats(state);
+  const { tickets, wins, losses } = state.battle;
+  const stat = (label, value, id) => `<div><dt>${label}</dt><dd id="bs-${id}">${value}</dd></div>`;
+  $('#view-battle').innerHTML = `
+    <h1 class="page-title">전투</h1>
+    <div class="stage-card${m.boss ? ' is-boss' : ''}">
+      <div class="stage-label" id="stage-label">${stageLabel(m)}</div>
+      <div class="stage-art">${monsterSVG(m)}</div>
+      <div class="stage-name" id="stage-name">${m.name}</div>
+      <div class="stage-stats">체력 ${m.hp} · 공격 ${m.atk} · 방어 ${m.def}</div>
+      <div class="stage-reward">승리 보상 <i class="coin"></i><b>${m.gold}</b></div>
+    </div>
+    <button type="button" class="btn primary block big" data-action="battle-start"${tickets < 1 ? ' disabled' : ''}>⚔ 전투 시작</button>
+    <p class="ticket-line">전투 기회 <b id="battle-tickets">${Math.max(0, tickets)}</b>번
+      <span>${tickets < 0 ? `취소한 체크만큼 ${-tickets}번을 먼저 채워야 해요.` : '습관을 하나 완료할 때마다 1번, 완벽한 하루에 1번 더 생겨요.'}</span></p>
+    <div class="card">
+      <h2>내 능력치</h2>
+      <dl class="battle-stats">
+        ${stat('공격력', p.atk, 'atk')}${stat('방어력', p.def, 'def')}${stat('체력', p.maxHp, 'hp')}
+        ${stat('스킬 쿨타임', `${(B.skillCooldownMs(p) / 1000).toFixed(1)}초`, 'cd')}${stat('피버 확률', `${p.feverPct}%`, 'fever')}
+      </dl>
+      <p class="muted note">레벨이 오르면 공격력과 체력이 오르고, 무기는 공격력, 머리·몸은 방어력, 머리는 쿨타임, 장신구는 피버 확률을 올려요.</p>
+    </div>
+    <p class="hint" id="battle-record">${wins + losses ? `${wins}승 ${losses}패 · ` : ''}져도 잃는 것은 없어요. 공격은 자동이고, 스킬은 직접 누릅니다.</p>`;
+}
+
+function startBattle() {
+  const start = G.beginBattle(state);
+  if (!start.ok) {
+    toast('전투 기회가 없어요. 습관을 완료하면 생겨요.');
+    return;
+  }
+  save();
+  renderBattle();
+
+  const b = B.createBattle(start.player, start.monster);
+  const { monster } = start;
+  const el = document.createElement('div');
+  el.className = `arena${monster.boss ? ' is-boss' : ''}`;
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-label', `${stageLabel(monster)} 전투`);
+  el.innerHTML = `
+    <div class="arena-top">
+      <span class="arena-stage">${stageLabel(monster)}</span>
+      <span class="arena-time" id="arena-time"></span>
+    </div>
+    <div class="fever-flag" id="fever-flag" hidden>🔥 피버 타임!</div>
+    <div class="arena-field">
+      <div class="fighter me" id="f-me">
+        <div class="fighter-art">${characterSVG(state.gear.equipped)}</div>
+        <div class="hpbar"><i></i></div>
+        <span class="hpnum"></span>
+      </div>
+      <div class="fighter foe" id="f-foe">
+        <div class="fighter-art">${monsterSVG(monster)}</div>
+        <div class="hpbar"><i></i></div>
+        <span class="hpnum"></span>
+        <b class="foe-name">${monster.name}</b>
+      </div>
+    </div>
+    <button type="button" class="skill-btn" id="skill-btn" disabled>
+      <span class="skill-fill"></span><b>강타</b><small></small>
+    </button>
+    <div class="arena-result" id="arena-result" hidden></div>`;
+  $('#overlay-root').append(el);
+
+  const me = $('#f-me', el);
+  const foe = $('#f-foe', el);
+  const skillBtn = $('#skill-btn', el);
+  let pressed = false;
+  skillBtn.addEventListener('click', () => (pressed = true));
+
+  const number = (target, text, cls) => {
+    const n = document.createElement('span');
+    n.className = `dmg ${cls}`;
+    n.textContent = text;
+    n.style.left = `${30 + Math.random() * 40}%`;
+    n.addEventListener('animationend', () => n.remove());
+    target.append(n);
+  };
+  const draw = () => {
+    for (const [node, unit] of [[me, b.player], [foe, b.monster]]) {
+      $('.hpbar i', node).style.width = `${(Math.max(0, unit.hp) / unit.maxHp) * 100}%`;
+      $('.hpnum', node).textContent = `${Math.max(0, unit.hp)} / ${unit.maxHp}`;
+    }
+    $('#arena-time', el).textContent = `${Math.ceil((B.TIME_LIMIT_MS - b.t) / 1000)}초`;
+    const fever = B.inFever(b);
+    $('#fever-flag', el).hidden = !fever;
+    el.classList.toggle('is-fever', fever);
+    const ready = B.skillReady(b);
+    const cooldown = B.skillCooldownMs(b.player);
+    skillBtn.disabled = !ready;
+    skillBtn.classList.toggle('is-ready', ready);
+    $('.skill-fill', skillBtn).style.height = `${Math.min(100, 100 - (Math.max(0, b.skillAt - b.t) / cooldown) * 100)}%`;
+    $('small', skillBtn).textContent = ready ? '준비 완료' : `${((b.skillAt - b.t) / 1000).toFixed(1)}초`;
+  };
+  const play = (e) => {
+    if (e.type === 'hit') {
+      replay(me, 'is-attacking');
+      replay(foe, 'is-hurt');
+      number(foe, e.dmg, e.fever ? 'fever' : '');
+    } else if (e.type === 'skill') {
+      replay(me, 'is-attacking');
+      replay(foe, 'is-hurt');
+      replay(el, 'is-shaking');
+      number(foe, `강타! ${e.dmg}`, 'skill');
+      navigator.vibrate?.(30);
+    } else if (e.type === 'hurt') {
+      replay(foe, 'is-attacking');
+      replay(me, 'is-hurt');
+      number(me, e.dmg, 'hurt');
+    } else if (e.type === 'fever') {
+      navigator.vibrate?.([15, 30, 15]);
+    }
+  };
+
+  draw();
+  const timer = setInterval(() => {
+    if (!el.isConnected) return clearInterval(timer);
+    const events = B.step(b, Math.random, pressed);
+    pressed = false;
+    events.forEach(play);
+    draw();
+    if (b.result) {
+      clearInterval(timer);
+      setTimeout(() => showBattleResult(el, b, start), 500 / BATTLE_SPEED);
+    }
+  }, B.TICK_MS / BATTLE_SPEED);
+}
+
+function showBattleResult(el, b, start) {
+  const won = b.result === 'win';
+  const res = G.finishBattle(state, start.stage, won);
+  save();
+  renderAll();
+  (won ? $('#f-foe', el) : $('#f-me', el)).classList.add('is-down');
+  $('#skill-btn', el).hidden = true;
+
+  const tickets = Math.max(0, state.battle.tickets);
+  const next = B.monsterFor(G.nextStage(state));
+  const again = tickets
+    ? `<button type="button" class="btn primary" data-again>${won ? '다음 스테이지' : '다시 도전'} (기회 ${tickets})</button>`
+    : '';
+  const box = $('#arena-result', el);
+  box.dataset.result = b.result;
+  box.innerHTML = won
+    ? `<div class="result-title win">승리!</div>
+       <div class="result-reward"><i class="coin"></i>+${res.gold} G</div>
+       <p>다음은 ${stageLabel(next)} · ${next.name}</p>`
+    : `<div class="result-title lose">${b.result === 'timeout' ? '시간 초과' : '패배'}</div>
+       <p>잃은 것은 없어요.<br>장비를 사거나 레벨을 올려 다시 도전해 보세요.</p>`;
+  box.innerHTML += `<div class="result-actions">${again}<button type="button" class="btn" data-close>돌아가기</button></div>`;
+  box.hidden = false;
+  if (won) {
+    confetti(el, 30);
+    navigator.vibrate?.([30, 40, 60]);
+  }
+  $('[data-close]', box).addEventListener('click', () => el.remove());
+  $('[data-again]', box)?.addEventListener('click', () => {
+    el.remove();
+    startBattle();
+  });
+}
+
 // ───────── 상점 · 장비 화면 ─────────
 
 function itemCard(item) {
@@ -546,6 +741,7 @@ function itemCard(item) {
       <div class="item-text">
         <div class="item-name">${item.name}</div>
         <div class="item-effect">경험치 +${item.xpPct}%</div>
+        <div class="item-stats">${statText(item.stats)}</div>
       </div>
       ${action}
     </div>`;
@@ -565,7 +761,7 @@ function renderShop() {
       <div class="shop-stats">
         <div class="gold big${gold < 0 ? ' is-neg' : ''}" aria-label="골드"><i class="coin"></i><b id="shop-gold">${gold.toLocaleString('ko-KR')}</b></div>
         <div class="shop-bonus">장비 효과 <b id="shop-bonus">경험치 +${G.equipBonusPct(state)}%</b></div>
-        <p class="muted">낀 장비의 효과를 더해요. 합쳐서 최대 +${G.EQUIP_BONUS_MAX_PCT}%.</p>
+        <p class="muted">경험치 효과는 합쳐서 최대 +${G.EQUIP_BONUS_MAX_PCT}%. 전투 능력치는 전투 탭에서 볼 수 있어요.</p>
       </div>
     </div>
     ${slots}`;
@@ -579,7 +775,7 @@ async function buy(id) {
   }
   const ok = await confirmDialog({
     title: `${item.name}${eul(item.name)} 살까요?`,
-    body: `${item.price.toLocaleString('ko-KR')} G를 쓰고 바로 착용합니다. 효과: 경험치 +${item.xpPct}%`,
+    body: `${item.price.toLocaleString('ko-KR')} G를 쓰고 바로 착용합니다. 효과: 경험치 +${item.xpPct}% · ${statText(item.stats)}`,
     okLabel: '구매',
   });
   if (!ok) return;
@@ -865,6 +1061,7 @@ function renderAll(heroOptions) {
   $('#hero-char').innerHTML = characterSVG(state.gear.equipped);
   updateHero(heroOptions);
   renderToday();
+  renderBattle();
   renderShop();
   renderLog();
   renderSettings();
@@ -872,6 +1069,7 @@ function renderAll(heroOptions) {
 
 function switchTab(tab) {
   // 오늘 화면에서 체크한 결과(골드, 레벨, 기록)를 반영한다
+  if (tab === 'battle') renderBattle();
   if (tab === 'shop') renderShop();
   if (tab === 'log') renderLog();
   for (const view of document.querySelectorAll('.view')) view.hidden = view.id !== `view-${tab}`;
@@ -909,6 +1107,7 @@ const ACTIONS = {
   'buy': (el) => buy(el.dataset.id),
   'equip': (el) => setEquip(G.ITEMS[el.dataset.id].slot, el.dataset.id),
   'unequip': (el) => setEquip(el.dataset.slot, null),
+  'battle-start': () => startBattle(),
   'pick-day': (el) => pickDay(el.dataset.day),
   'export': () => exportBackup(),
   'import': () => $('#import-file').click(),
@@ -956,9 +1155,15 @@ function bindEvents() {
 /** 오프라인에서도 열리도록 앱 파일을 기기에 저장해 두는 서비스 워커를 등록한다. */
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
+  const hadController = Boolean(navigator.serviceWorker.controller); // 이미 설치된 적이 있는 기기인지
   navigator.serviceWorker.register('sw.js').catch((err) => console.warn('서비스 워커 등록 실패', err));
   navigator.serviceWorker.ready.then(() => renderSettings());
-  navigator.serviceWorker.addEventListener('controllerchange', () => renderSettings());
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    renderSettings();
+    // 새 버전의 파일을 다 받았다. 지금 화면은 아직 예전 파일이므로 다시 열도록 안내한다.
+    if (hadController) $('#update-banner').hidden = false;
+  });
+  $('#update-banner').addEventListener('click', () => location.reload());
 }
 
 async function init() {

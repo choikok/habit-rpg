@@ -1,5 +1,5 @@
 // IndexedDB 저장소. 모든 데이터는 이 기기 안에만 저장된다.
-import { createState, defaultGear, defaultPlayer, defaultProgress, defaultSettings } from './game.js';
+import { createState, defaultBattle, defaultGear, defaultPlayer, defaultProgress, defaultSettings } from './game.js';
 
 const DB_NAME = 'habit-rpg';
 const DB_VERSION = 1;
@@ -47,6 +47,7 @@ export async function loadState() {
     if (key === 'settings') state.settings = { ...defaultSettings(), ...value };
     if (key === 'progress') state.progress = { ...defaultProgress(), ...value };
     if (key === 'gear') state.gear = { ...defaultGear(), ...value };
+    if (key === 'battle') state.battle = { ...defaultBattle(), ...value };
   }
   for (const h of habits) state.habits[h.id] = h;
   for (const c of completions) state.completions[c.id] = c;
@@ -77,7 +78,7 @@ export async function replaceAll(state) {
   await open();
   const tx = db.transaction(Object.keys(STORES), 'readwrite');
   for (const store of Object.keys(STORES)) tx.objectStore(store).clear();
-  for (const key of ['player', 'settings', 'progress', 'gear']) tx.objectStore('meta').put({ key, ...structuredClone(state[key]) });
+  for (const key of ['player', 'settings', 'progress', 'gear', 'battle']) tx.objectStore('meta').put({ key, ...structuredClone(state[key]) });
   for (const store of ['habits', 'completions', 'days']) {
     for (const rec of Object.values(state[store])) tx.objectStore(store).put(structuredClone(rec));
   }
