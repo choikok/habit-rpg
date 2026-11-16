@@ -1,6 +1,6 @@
 // JSON 백업 내보내기·가져오기. 화면이나 저장소를 건드리지 않는 순수 함수만 둔다.
 // 가져올 때는 파일 내용을 믿지 않고 항목마다 형식을 검사한다.
-import { CATEGORY, DIFFICULTY, HP_MAX, ITEMS, NAME_MAX, SLOTS, createState } from './game.js';
+import { CATEGORY, DIFFICULTY, HP_MAX, ITEMS, NAME_MAX, SLOTS, TIMES, createState, setRoutine } from './game.js';
 import { SUGGESTIONS } from './suggestions.js';
 
 export const BACKUP_APP = 'habit-rpg';
@@ -13,7 +13,13 @@ export function exportData(state, nowMs) {
     version: BACKUP_VERSION,
     exportedAt: new Date(nowMs).toISOString(),
     player: { ...state.player },
-    settings: { dayStartHour: state.settings.dayStartHour },
+    settings: {
+      dayStartHour: state.settings.dayStartHour,
+      workStart: state.settings.workStart,
+      workEnd: state.settings.workEnd,
+      nightStart: state.settings.nightStart,
+      workDays: [...state.settings.workDays],
+    },
     progress: { lastDay: state.progress.lastDay },
     gear: { owned: [...state.gear.owned], equipped: { ...state.gear.equipped }, carry: state.gear.carry },
     battle: { ...state.battle },
@@ -49,6 +55,10 @@ function readHabit(h, i) {
   });
   schedule.sort((a, b) => (a.from < b.from ? -1 : 1));
   const habit = { id: h.id, name: h.name.trim(), difficulty: h.difficulty, category: h.category, schedule, createdDay: h.createdDay, order: h.order };
+  if (h.when !== undefined) {
+    if (typeof h.when !== 'string' || !Object.hasOwn(TIMES, h.when)) fail(`${where} 시간대`);
+    habit.when = h.when;
+  }
   if (h.templateId !== undefined) {
     if (typeof h.templateId !== 'string') fail(`${where} 추천`);
     // 지금 목록에 없는 추천이면 연결만 끊고 습관은 그대로 가져온다
@@ -108,6 +118,17 @@ export function importData(text) {
 
   if (!isObj(data.settings) || !isInt(data.settings.dayStartHour, 0, 23)) fail('설정');
   state.settings.dayStartHour = data.settings.dayStartHour;
+  // 하루 일과는 시간대 기능이 생기기 전의 백업에는 없다. 그때는 기본값(평일 08:30–17:30)을 쓴다.
+  const set = data.settings;
+  if (set.workStart !== undefined || set.workEnd !== undefined || set.nightStart !== undefined || set.workDays !== undefined) {
+    if (!Array.isArray(set.workDays) || !set.workDays.every((d) => isInt(d, 0, 6))) fail('설정');
+    try {
+      setRoutine(state, set);
+    } catch {
+      fail('설정');
+    }
+    state.dirty.clear();
+  }
 
   const lastDay = data.progress?.lastDay ?? null;
   if (lastDay !== null && !isDay(lastDay)) fail('진행 상황');

@@ -31,13 +31,19 @@ function serve() {
 }
 
 const results = [];
+let afterFailure = async () => {}; // 실패한 시험이 열어 둔 창 때문에 다음 시험까지 막히지 않게 정리한다
+// 시험 일부만 돌리기: E2E_ONLY='8단계' (빈 상태에서 시작하는 묶음에만 쓸 것), 실패 내용 전부 보기: E2E_VERBOSE=1
+const ONLY = process.env.E2E_ONLY ? new RegExp(process.env.E2E_ONLY) : null;
+const DETAIL_LINES = process.env.E2E_VERBOSE ? 80 : 6;
 async function step(name, fn) {
+  if (ONLY && !ONLY.test(name)) return;
   try {
     await fn();
     results.push(`  통과  ${name}`);
   } catch (err) {
-    results.push(`  실패  ${name}\n        ${String(err.message).split('\n').slice(0, 6).join('\n        ')}`);
+    results.push(`  실패  ${name}\n        ${String(err.message).split('\n').slice(0, DETAIL_LINES).join('\n        ')}`);
     process.exitCode = 1;
+    await afterFailure().catch(() => {});
   }
 }
 
@@ -55,6 +61,9 @@ async function step(name, fn) {
   });
   const page = await context.newPage();
   const errors = [];
+  afterFailure = () => page.evaluate(() => {
+    for (const el of document.querySelectorAll('#overlay-root > *')) el.remove();
+  });
   const requested = new Set();
   context.on('request', (r) => requested.add(new URL(r.url()).origin));
   page.on('pageerror', (e) => errors.push(e.message));
@@ -135,7 +144,7 @@ async function step(name, fn) {
     await page.locator('.seg label', { hasText: difficulty }).click();
     await page.locator('.seg label', { hasText: category }).click();
     if (name === '책 읽기') await shot('02-습관-추가-시트');
-    await page.locator('form button[type="submit"]').click();
+    await page.locator('.sheet button[type="submit"]').click();
     await page.waitForSelector('.backdrop', { state: 'detached' });
   }
 
@@ -160,8 +169,8 @@ async function step(name, fn) {
 
   await step('이름 없이 저장하면 안내 문구가 뜨고 추가되지 않는다', async () => {
     await page.locator('#view-today [data-action="add-habit"]').first().click();
-    await page.locator('form button[type="submit"]').click();
-    assert.match(await page.textContent('.form-error'), /이름/);
+    await page.locator('.sheet button[type="submit"]').click();
+    assert.match(await page.textContent('.sheet .form-error'), /이름/);
     await page.locator('[data-cancel]').click();
     assert.equal(await page.locator('.habit').count(), 3);
   });
@@ -316,8 +325,8 @@ async function step(name, fn) {
     const row = page.locator('.manage-list li', { hasText: '산책' });
     await row.locator('[data-action="edit-habit"]').click();
     await page.fill('[name="name"]', '저녁 산책');
-    for (const d of ['화', '목', '토', '일']) await page.locator('.seg.cols-7 label', { hasText: d }).click(); // 월·수·금만 남김
-    await page.locator('form button[type="submit"]').click();
+    for (const d of ['화', '목', '토', '일']) await page.locator('.sheet .seg.cols-7 label', { hasText: d }).click(); // 월·수·금만 남김
+    await page.locator('.sheet button[type="submit"]').click();
     assert.match(await page.locator('.manage-list').textContent(), /저녁 산책\s*운동 · 보통 · 월·수·금/);
 
     await page.locator('.manage-list li', { hasText: '책 읽기' }).locator('[data-action="delete-habit"]').click();
@@ -395,7 +404,8 @@ async function step(name, fn) {
     await shot('27-추천-담기');
     await submit.click();
     await page.waitForSelector('.backdrop', { state: 'detached' });
-    assert.deepEqual(await page.locator('.habit-name').allTextContents(), ['산책 10분', '책 10쪽 읽기', '물 300ml 마시기']);
+    // 월요일 09시는 업무 시간: 업무 습관(물 마시기)이 먼저, 저녁 습관(산책·책 읽기)은 '이따가'
+    assert.deepEqual(await page.locator('.habit-name').allTextContents(), ['물 300ml 마시기', '산책 10분', '책 10쪽 읽기']);
     assert.equal(await rewardOf('산책 10분'), '+5 XP · +2 G');
     assert.equal((await hero()).progress, '0 / 3');
     assert.match(await habit('산책 10분').getAttribute('class'), /cat-exercise/);
@@ -405,7 +415,9 @@ async function step(name, fn) {
   await step('[6단계] 습관 추가 화면의 추천 칩: 누르면 이름·분야가 채워지고, 난이도를 바꾸면 분량이 따라 바뀐다', async () => {
     await setClock('2026-11-23T09:10:00');
     await page.locator('#view-today .section-head [data-action="add-habit"]').click();
-    assert.equal(await page.locator('.sug-chip').count(), 6); // 첫 분야(운동) 6개
+    assert.match(await page.locator('.sug-tab.is-on').textContent(), /지금/); // 첫 탭은 지금 시간대 추천
+    await page.locator('.sug-tab', { hasText: '운동' }).click();
+    assert.equal(await page.locator('.sug-chip').count(), 6);
     assert.equal(await page.locator('.sug-chip', { hasText: '산책' }).isDisabled(), true); // 이미 담은 것
     await page.locator('.sug-tab', { hasText: '생활' }).click();
     assert.equal(await page.locator('.sug-chip', { hasText: '물 마시기' }).isDisabled(), true);
@@ -419,7 +431,7 @@ async function step(name, fn) {
     assert.equal(await page.inputValue('[name="name"]'), '일기 한 줄 쓰기');
     await page.waitForTimeout(300);
     await shot('28-추천-칩');
-    await page.locator('form button[type="submit"]').click();
+    await page.locator('.sheet button[type="submit"]').click();
     await page.waitForSelector('.backdrop', { state: 'detached' });
     assert.equal(await rewardOf('일기 한 줄 쓰기'), '+5 XP · +2 G');
   });
@@ -435,7 +447,7 @@ async function step(name, fn) {
     assert.equal(await page.locator('.seg .amount').count(), 0);
     await page.locator('.sheet .seg label', { hasText: '어려움' }).click();
     assert.equal(await page.inputValue('[name="name"]'), '책상 정리 15분');
-    await page.locator('form button[type="submit"]').click();
+    await page.locator('.sheet button[type="submit"]').click();
     await page.waitForSelector('.backdrop', { state: 'detached' });
     assert.equal(await rewardOf('책상 정리 15분'), '+20 XP · +8 G');
   });
@@ -447,7 +459,7 @@ async function step(name, fn) {
     assert.deepEqual(await page.locator('.seg .amount').allTextContents(), ['10분', '30분', '1시간']);
     await page.locator('.sheet .seg label', { hasText: '보통' }).click();
     assert.equal(await page.inputValue('[name="name"]'), '산책 30분');
-    await page.locator('form button[type="submit"]').click();
+    await page.locator('.sheet button[type="submit"]').click();
     await page.waitForSelector('.backdrop', { state: 'detached' });
     assert.match(await page.locator('.manage-list').textContent(), /산책 30분\s*운동 · 보통 · 매일/);
 
@@ -458,8 +470,9 @@ async function step(name, fn) {
     await page.locator('.sheet [data-cancel]').click();
     await page.reload(); // 다시 열어도 그대로
     await page.waitForSelector('.habit');
+    // 지금(업무): 물 / 이따가: 저녁(산책·책 읽기·책상 정리) → 자기 전(일기)
     assert.deepEqual(await page.locator('.habit-name').allTextContents(),
-      ['산책 30분', '책 10쪽 읽기', '물 300ml 마시기', '일기 한 줄 쓰기', '책상 정리 15분']);
+      ['물 300ml 마시기', '산책 30분', '책 10쪽 읽기', '책상 정리 15분', '일기 한 줄 쓰기']);
   });
 
   await step('[7단계] 오늘 화면의 연필 버튼으로 바로 수정하고, 수정 화면에서 삭제도 된다', async () => {
@@ -473,10 +486,10 @@ async function step(name, fn) {
     assert.equal(await page.inputValue('[name="name"]'), '책상 정리 15분');
     await page.fill('[name="name"]', '책상 정리 20분');
     await page.locator('.sheet .seg label', { hasText: '보통' }).click();
-    for (const d of ['토', '일']) await page.locator('.seg.cols-7 label', { hasText: d }).click(); // 평일만
+    for (const d of ['토', '일']) await page.locator('.sheet .seg.cols-7 label', { hasText: d }).click(); // 평일만
     await page.waitForTimeout(300);
     await shot('30-수정-화면');
-    await page.locator('form button[type="submit"]').click();
+    await page.locator('.sheet button[type="submit"]').click();
     await page.waitForSelector('.backdrop', { state: 'detached' });
     assert.equal(await habit('책상 정리 20분').getAttribute('aria-pressed'), 'false'); // 체크되지 않았다
     assert.equal(await rewardOf('책상 정리 20분'), '+10 XP · +4 G');
@@ -490,18 +503,155 @@ async function step(name, fn) {
     assert.match(await page.textContent('.dialog'), /"일기 한 줄 쓰기" 습관을 지웁니다/);
     await page.locator('[data-answer="yes"]').click();
     await page.waitForSelector('.backdrop', { state: 'detached' });
-    assert.deepEqual(await page.locator('.habit-name').allTextContents(), ['산책 30분', '책 10쪽 읽기', '물 300ml 마시기', '책상 정리 20분']);
+    assert.deepEqual(await page.locator('.habit-name').allTextContents(), ['물 300ml 마시기', '산책 30분', '책 10쪽 읽기', '책상 정리 20분']);
 
     // 체크된 습관도 연필로 고칠 수 있고, 체크 상태는 그대로다
     await habit('물 300ml 마시기').click();
     await page.locator('li', { hasText: '물 300ml 마시기' }).locator('.habit-edit').click();
     await page.locator('.sheet .seg label', { hasText: '보통' }).click();
     assert.equal(await page.inputValue('[name="name"]'), '물 1L 마시기'); // 추천에서 온 습관: 분량이 따라 바뀐다
-    await page.locator('form button[type="submit"]').click();
+    await page.locator('.sheet button[type="submit"]').click();
     await page.waitForSelector('.backdrop', { state: 'detached' });
     assert.equal(await habit('물 1L 마시기').getAttribute('aria-pressed'), 'true');
 
     // 다음 시험을 위해 다시 빈 상태로 되돌린다
+    await tab('settings');
+    await page.locator('[data-action="reset"]').click();
+    await page.locator('[data-answer="yes"]').click();
+    await page.locator('[data-answer="yes"]').click();
+    await page.waitForSelector('.empty-today');
+  });
+
+  const groupTitles = () => page.locator('.group-title').allTextContents();
+  const sectionOf = async () => {
+    // 오늘 목록을 [묶음 제목, [습관 이름…]] 으로 읽는다
+    return page.evaluate(() => {
+      const out = [];
+      for (const li of document.querySelectorAll('#habit-list > li')) {
+        if (li.classList.contains('group-title')) out.push([li.textContent.trim(), []]);
+        else if (li.querySelector('.habit-name')) {
+          if (!out.length) out.push(['(제목 없음)', []]);
+          out[out.length - 1][1].push(li.querySelector('.habit-name').textContent);
+        }
+      }
+      return out;
+    });
+  };
+  const tick = async (iso) => {
+    // 앱을 켜 둔 채 시간이 흐른 상황: 시계를 옮기고 화면으로 돌아온 것처럼 알린다
+    await setClock(iso);
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  };
+
+  await step('[8단계] 추천을 담으면 시간대도 함께 들어가고, 지금 시간대에 맞는 추천에 "지금" 표시가 붙는다', async () => {
+    await openAt('2026-11-23T07:30:00'); // 월요일 아침
+    await page.locator('.empty-today [data-action="suggest"]').click();
+    assert.match(await page.locator('.sug-row', { hasText: '스트레칭 5분' }).textContent(), /🌅 아침 · 지금/);
+    assert.match(await page.locator('.sug-row', { hasText: '물 300ml' }).textContent(), /💼 업무 시간/);
+    for (const name of ['스트레칭 5분', '물 300ml', '25분 집중 1번', '산책 10분', '일기 한 줄', '채소 한 끼']) {
+      await page.locator('.sug-row', { hasText: name }).click();
+    }
+    await page.locator('.sheet [type="submit"]').click();
+    await page.waitForSelector('.backdrop', { state: 'detached' });
+    assert.equal(await page.textContent('#now-line'), '지금 🌅 아침 · ~08:30');
+    assert.deepEqual(await sectionOf(), [
+      ['지금 할 것 · 🌅 아침', ['스트레칭 5분', '채소 한 끼 먹기']],
+      ['이따가', ['25분 집중 1번', '물 300ml 마시기', '산책 10분', '일기 한 줄 쓰기']], // 한 번에 담으면 분야 순서대로 들어간다
+    ]);
+    assert.match(await habit('물 300ml 마시기').textContent(), /💼 업무/);
+    assert.doesNotMatch(await habit('채소 한 끼 먹기').textContent(), /언제나/); // '언제나'는 따로 표시하지 않는다
+  });
+
+  await step('[8단계] 08:30이 지나면 업무 시간 습관이 맨 위로 올라오고, 놓친 아침 습관은 따로 보인다', async () => {
+    await tick('2026-11-23T08:30:00');
+    assert.equal(await page.textContent('#now-line'), '지금 💼 업무 시간 · 08:30–17:30');
+    assert.deepEqual(await sectionOf(), [
+      ['지금 할 것 · 💼 업무 시간', ['25분 집중 1번', '물 300ml 마시기', '채소 한 끼 먹기']],
+      ['지나간 시간대 · 아직 안 했어요', ['스트레칭 5분']],
+      ['이따가', ['산책 10분', '일기 한 줄 쓰기']],
+    ]);
+    await page.waitForTimeout(300);
+    await shot('31-업무-시간');
+    // 완료하면 '완료'로 내려간다
+    await habit('물 300ml 마시기').click();
+    await habit('스트레칭 5분').click(); // 지나간 시간대 습관도 체크할 수 있다
+    assert.deepEqual((await sectionOf()).map(([t, n]) => [t, n.length]), [
+      ['지금 할 것 · 💼 업무 시간', 2], ['이따가', 2], ['완료', 2],
+    ]);
+    assert.deepEqual((await sectionOf())[2][1], ['스트레칭 5분', '물 300ml 마시기']);
+  });
+
+  await step('[8단계] 17:30이 지나면 저녁, 22시가 지나면 자기 전 습관이 맨 위로 온다', async () => {
+    await tick('2026-11-23T17:30:00');
+    assert.deepEqual((await sectionOf()).slice(0, 2), [
+      ['지금 할 것 · 🌆 저녁', ['산책 10분', '채소 한 끼 먹기']],
+      ['지나간 시간대 · 아직 안 했어요', ['25분 집중 1번']],
+    ]);
+    await tick('2026-11-24T01:00:00'); // 자정이 지나도 새벽 4시 전이면 아직 23일 밤
+    assert.equal(await page.textContent('#today-date'), '11월 23일 (월)');
+    assert.deepEqual((await sectionOf())[0], ['지금 할 것 · 🌙 자기 전', ['일기 한 줄 쓰기', '채소 한 끼 먹기']]);
+  });
+
+  await step('[8단계] 습관 추가 화면의 "지금" 탭: 업무 시간에는 업무 시간에 할 수 있는 추천이 먼저 나온다', async () => {
+    await tick('2026-11-23T15:00:00');
+    await page.locator('#view-today .section-head [data-action="add-habit"]').click();
+    assert.match(await page.locator('.sug-tab.is-on').textContent(), /💼 지금/);
+    assert.equal(await page.textContent('#sug-hint'), '업무 시간에 하기 좋은 습관이에요.');
+    assert.deepEqual(
+      (await page.locator('#sug-chips .sug-chip').allTextContents()).map((t) => t.replace(/\s+/g, ' ').trim()),
+      ['🪜 계단 오르기', '🎯 집중 시간 ✓', '📥 메일 정리', '🧍 일어나 몸 풀기', '📌 하루 돌아보기', '💧 물 마시기 ✓', '🥗 채소 먹기 ✓'],
+    );
+    await page.locator('.sug-chip', { hasText: '메일 정리' }).click();
+    assert.equal(await page.locator('[name="when"][value="work"]').isChecked(), true); // 시간대도 채워진다
+    assert.equal(await page.locator('[name="category"][value="work"]').isChecked(), true);
+    await page.waitForTimeout(300);
+    await shot('32-지금-추천');
+    await page.locator('.sheet button[type="submit"]').click();
+    await page.waitForSelector('.backdrop', { state: 'detached' });
+    assert.deepEqual((await sectionOf())[0], ['지금 할 것 · 💼 업무 시간', ['25분 집중 1번', '메일 정리 15분', '채소 한 끼 먹기']]);
+  });
+
+  await step('[8단계] 연필로 시간대를 바꾸면 바로 그 묶음으로 옮겨진다', async () => {
+    await page.locator('li', { hasText: '채소 한 끼 먹기' }).locator('.habit-edit').click();
+    assert.equal(await page.locator('[name="when"][value="any"]').isChecked(), true);
+    await page.locator('.when-seg label', { hasText: '저녁' }).click();
+    await page.locator('.sheet button[type="submit"]').click();
+    await page.waitForSelector('.backdrop', { state: 'detached' });
+    assert.deepEqual((await sectionOf()).find(([t]) => t === '이따가')[1], ['산책 10분', '채소 한 끼 먹기', '일기 한 줄 쓰기']);
+    assert.match(await habit('채소 한 끼 먹기').textContent(), /🌆 저녁/);
+  });
+
+  await step('[8단계] 설정의 하루 일과: 업무 시간과 요일을 바꾸면 그대로 반영되고, 잘못된 순서는 막는다', async () => {
+    await tab('settings');
+    assert.equal(await page.inputValue('[name="workStart"]'), '08:30');
+    assert.equal(await page.inputValue('[name="workEnd"]'), '17:30');
+    await page.fill('[name="workStart"]', '18:00');
+    await page.locator('#routine-form [type="submit"]').click();
+    assert.equal(await page.textContent('#routine-form .form-error'), '업무 끝 시각은 시작보다 늦어야 해요.');
+    await page.fill('[name="workStart"]', '09:00');
+    await page.fill('[name="workEnd"]', '18:00');
+    await page.locator('#routine-form label', { hasText: '토' }).click(); // 토요일도 근무
+    await page.locator('#routine-form [type="submit"]').click();
+    assert.match(await page.textContent('#toast'), /하루 일과를 저장했어요/);
+    await page.locator('#routine-form').scrollIntoViewIfNeeded();
+    await shot('33-일과-설정');
+    await page.reload();
+    await page.waitForSelector('.habit');
+    await tab('settings');
+    assert.equal(await page.inputValue('[name="workStart"]'), '09:00');
+    await tab('today');
+    await tick('2026-11-23T08:45:00');
+    assert.equal(await page.textContent('#now-line'), '지금 🌅 아침 · ~09:00');
+    await tick('2026-11-23T17:45:00');
+    assert.equal(await page.textContent('#now-line'), '지금 💼 업무 시간 · 09:00–18:00');
+  });
+
+  await step('[8단계] 쉬는 날(일요일)에는 업무 시간이 없고, 업무 습관도 낮에 함께 보인다', async () => {
+    await openAt('2026-11-29T14:00:00'); // 일요일
+    assert.equal(await page.textContent('#now-line'), '지금 🌤️ 낮 (쉬는 날) · 12:00–18:00');
+    assert.deepEqual((await sectionOf())[0], ['지금 할 것 · 🌤️ 낮 (쉬는 날)', ['25분 집중 1번', '물 300ml 마시기', '메일 정리 15분']]);
+    // 다음 시험을 위해 11월 23일 시점에서 다시 빈 상태로 되돌린다
+    await setClock('2026-11-23T09:11:00');
     await tab('settings');
     await page.locator('[data-action="reset"]').click();
     await page.locator('[data-answer="yes"]').click();
@@ -746,7 +896,8 @@ async function step(name, fn) {
     await page.setInputFiles('#import-file', backupFile);
     await page.locator('[data-answer="yes"]').click();
     await page.waitForSelector('#view-today:not([hidden])');
-    assert.deepEqual(await page.locator('.habit-name').allTextContents(), ['물 마시기', '산책', '책 읽기']);
+    // 아직 안 한 책 읽기가 위, 완료한 물 마시기·산책은 '완료'로 아래
+    assert.deepEqual(await page.locator('.habit-name').allTextContents(), ['책 읽기', '물 마시기', '산책']);
     assert.equal(await wearing(), 'head4 body4 weapon4 accessory4');
     assert.deepEqual(await hero(), before);
     await page.reload(); // 가져온 내용이 저장되어 있다
@@ -963,7 +1114,7 @@ async function step(name, fn) {
     await page.waitForSelector('.habit');
     const before = await hero();
     assert.equal(await page.locator('#update-banner').isHidden(), true);
-    assert.deepEqual(await page.evaluate(() => caches.keys()), ['habit-rpg-v4']);
+    assert.deepEqual(await page.evaluate(() => caches.keys()), ['habit-rpg-v5']);
 
     pretendNewVersion = true;
     await page.evaluate(async () => (await navigator.serviceWorker.getRegistration()).update());

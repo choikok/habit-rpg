@@ -20,6 +20,7 @@ const CHECK_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5
 
 let state;
 let currentDay;
+let currentTimeSlot; // 오늘 화면을 마지막으로 그린 시간대. 시간대가 바뀌면 다시 그린다
 let logSelected; // 기록 화면 달력에서 고른 날짜
 let installPrompt = null; // 브라우저가 건네준 '홈 화면에 설치' 요청
 const calmMotion = matchMedia('(prefers-reduced-motion: reduce)');
@@ -56,6 +57,29 @@ function hourLabel(h) {
   if (h < 6) return `새벽 ${h}시`;
   if (h < 12) return `오전 ${h}시`;
   return `오후 ${h - 12}시`;
+}
+
+const clock = (m) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+const fromClock = (text) => {
+  const [h, m] = String(text).split(':').map(Number);
+  return h * 60 + m;
+};
+
+/** 지금 시간대 이름. 쉬는 날 낮은 시간대 목록에 없는 'day' */
+function timeLabel(time) {
+  if (time === 'day') return { icon: '🌤️', label: '낮 (쉬는 날)' };
+  return G.TIMES[time];
+}
+
+/** 지금 시간대가 몇 시부터 몇 시까지인지 */
+function timeRange(time, workDay) {
+  const s = state.settings;
+  const start = s.dayStartHour * 60;
+  if (time === 'morning') return `~${clock(workDay ? s.workStart : 12 * 60)}`;
+  if (time === 'work') return `${clock(s.workStart)}–${clock(s.workEnd)}`;
+  if (time === 'day') return `12:00–${clock(s.workEnd)}`;
+  if (time === 'evening') return `${clock(s.workEnd)}–${clock(s.nightStart)}`;
+  return `${clock(s.nightStart)}~${clock(start)}`;
 }
 
 /** 받침이 있으면 '을', 없으면 '를' */
@@ -150,6 +174,7 @@ function habitRow(habit) {
           <span class="habit-name">${esc(habit.name)}</span>
           <span class="habit-meta">
             <span class="chip">${G.DIFFICULTY[habit.difficulty].label}</span>
+            ${G.habitWhen(habit) !== 'any' ? `<span class="when">${G.TIMES[G.habitWhen(habit)].icon} ${G.TIMES[G.habitWhen(habit)].short ?? G.TIMES[G.habitWhen(habit)].label}</span>` : ''}
             ${streakText ? `<span class="streak">${streakText}</span>` : ''}
             <span class="reward">${reward}</span>
           </span>
@@ -166,9 +191,23 @@ function renderToday({ justDoneId } = {}) {
   $('#today-date').textContent = formatDay(currentDay);
   const { habits, done } = G.daySummary(state, currentDay);
   const list = $('#habit-list');
+  const { time, workDay, groups } = G.todayGroups(state, now());
+  currentTimeSlot = time;
+  const t = timeLabel(time);
+  $('#now-line').hidden = !habits.length;
+  $('#now-line').innerHTML = `지금 <b>${t.icon} ${t.label}</b> · ${timeRange(time, workDay)}`;
 
   if (habits.length) {
-    list.innerHTML = habits.map(habitRow).join('');
+    // 묶음이 '지금' 하나뿐이면(시간대를 안 정한 습관만 있을 때) 제목 없이 예전처럼 보여 준다
+    const sections = [
+      ['now', `지금 할 것 · ${t.icon} ${t.label}`],
+      ['missed', '지나간 시간대 · 아직 안 했어요'],
+      ['later', '이따가'],
+      ['done', '완료'],
+    ].filter(([key]) => groups[key].length);
+    const titled = sections.length > 1 || sections[0][0] !== 'now';
+    list.innerHTML = sections.map(([key, title]) =>
+      `${titled ? `<li class="group-title is-${key}" role="presentation">${title}</li>` : ''}${groups[key].map(habitRow).join('')}`).join('');
   } else if (Object.keys(state.habits).length) {
     list.innerHTML = '<li class="empty-today">오늘은 예정된 습관이 없어요.<br>푹 쉬고 내일 만나요!</li>';
   } else {
@@ -446,8 +485,8 @@ function confirmDialog({ title, body, okLabel, danger = false }) {
 
 function openHabitForm(habit) {
   const v = habit
-    ? { name: habit.name, difficulty: habit.difficulty, category: habit.category, days: G.currentDays(habit) }
-    : { name: '', difficulty: 'normal', category: 'life', days: G.ALL_DAYS };
+    ? { name: habit.name, difficulty: habit.difficulty, category: habit.category, days: G.currentDays(habit), when: G.habitWhen(habit) }
+    : { name: '', difficulty: 'normal', category: 'life', days: G.ALL_DAYS, when: 'any' };
 
   const radios = (name, options, current) =>
     options.map(([value, label, sub, color]) => `
@@ -459,17 +498,23 @@ function openHabitForm(habit) {
   // 추천: 새 습관을 만들 때만 고를 수 있다. 수정할 때는 연결만 유지한다.
   let tpl = habit?.templateId ?? null;
   const used = G.usedTemplateIds(state);
-  const chips = (category) => suggestionList().filter((s) => s.category === category).map((s) => `
+  const nowTime = G.currentTime(state, now()).time;
+  const nowSuggestions = () => (nowTime === 'day'
+    ? [...G.suggestionsFor('any'), ...G.suggestionsFor('work')]
+    : [...G.suggestionsFor(nowTime), ...G.suggestionsFor('any')]);
+  const chips = (category) => (category === 'now' ? nowSuggestions() : suggestionList().filter((s) => s.category === category)).map((s) => `
     <button type="button" class="sug-chip" data-tpl="${s.id}"${used.has(s.id) ? ' disabled' : ''}>
       ${s.emoji} ${s.title}${used.has(s.id) ? ' ✓' : ''}</button>`).join('');
   const suggestBox = habit ? '' : `
       <fieldset class="field">
         <legend>추천에서 고르기</legend>
         <div class="sug-tabs">
-          ${Object.entries(G.CATEGORY).map(([k, c], i) => `
-            <button type="button" class="sug-tab cat-${k}${i ? '' : ' is-on'}" data-sug-cat="${k}">${c.label}</button>`).join('')}
+          <button type="button" class="sug-tab is-now is-on" data-sug-cat="now">${timeLabel(nowTime).icon} 지금</button>
+          ${Object.entries(G.CATEGORY).map(([k, c]) => `
+            <button type="button" class="sug-tab cat-${k}" data-sug-cat="${k}">${c.label}</button>`).join('')}
         </div>
-        <div class="sug-chips" id="sug-chips">${chips(Object.keys(G.CATEGORY)[0])}</div>
+        <p class="muted sug-hint" id="sug-hint">${timeLabel(nowTime).label}에 하기 좋은 습관이에요.</p>
+        <div class="sug-chips" id="sug-chips">${chips('now')}</div>
       </fieldset>`;
 
   const { el, close } = openOverlay(`
@@ -490,6 +535,13 @@ function openHabitForm(habit) {
         <div class="seg cols-4">
           ${radios('category', Object.entries(G.CATEGORY).map(([k, c]) => [k, c.label, '', true]), v.category)}
         </div>
+      </fieldset>
+      <fieldset class="field">
+        <legend>언제 할까요</legend>
+        <div class="seg cols-5 when-seg">
+          ${radios('when', Object.entries(G.TIMES).map(([k, w]) => [k, w.icon, w.short ?? w.label]), v.when)}
+        </div>
+        <p class="muted note">오늘 화면에서 그 시간대가 되면 맨 위로 올라와요.</p>
       </fieldset>
       <fieldset class="field">
         <legend>반복 요일</legend>
@@ -531,6 +583,7 @@ function openHabitForm(habit) {
   form.addEventListener('click', (e) => {
     const tab = e.target.closest('[data-sug-cat]');
     if (tab) {
+      $('#sug-hint', form).hidden = tab.dataset.sugCat !== 'now';
       for (const t of form.querySelectorAll('.sug-tab')) t.classList.toggle('is-on', t === tab);
       $('#sug-chips', form).innerHTML = chips(tab.dataset.sugCat);
       showTemplate();
@@ -541,6 +594,7 @@ function openHabitForm(habit) {
     tpl = chip.dataset.tpl;
     nameInput.value = SUGGESTIONS[tpl].levels[difficulty()].name;
     $(`[name="category"][value="${SUGGESTIONS[tpl].category}"]`, form).checked = true;
+    $(`[name="when"][value="${SUGGESTIONS[tpl].when}"]`, form).checked = true;
     showTemplate();
   });
   form.addEventListener('change', (e) => {
@@ -563,6 +617,7 @@ function openHabitForm(habit) {
       difficulty: data.get('difficulty'),
       category: data.get('category'),
       days: data.getAll('days').map(Number),
+      when: data.get('when'),
       templateId: tpl,
     };
     const levelBefore = state.player.level;
@@ -585,6 +640,7 @@ function openHabitForm(habit) {
 /** 추천 습관 여러 개를 한 번에 담는 화면 */
 function openSuggestionSheet() {
   const used = G.usedTemplateIds(state);
+  const nowTime = G.currentTime(state, now()).time;
   const groups = Object.entries(G.CATEGORY).map(([category, c]) => `
       <fieldset class="field">
         <legend>${c.label}</legend>
@@ -593,7 +649,8 @@ function openSuggestionSheet() {
             <label class="sug-row${used.has(s.id) ? ' is-used' : ''}">
               <input type="checkbox" name="tpl" value="${s.id}"${used.has(s.id) ? ' disabled' : ''}>
               <span class="sug-emoji">${s.emoji}</span>
-              <span class="sug-name" data-name="${s.id}"></span>
+              <span class="sug-name"><span data-name="${s.id}"></span>
+                <small class="sug-when${s.when === nowTime ? ' is-now' : ''}">${G.TIMES[s.when].icon} ${G.TIMES[s.when].label}${s.when === nowTime ? ' · 지금' : ''}</small></span>
               <span class="sug-mark">${used.has(s.id) ? '추가됨' : '✓'}</span>
             </label>`).join('')}
         </div>
@@ -1132,6 +1189,24 @@ function renderSettings() {
       <select id="day-start" aria-label="하루 기준 시각">${hours}</select>
     </div>
     <div class="card">
+      <h2>하루 일과</h2>
+      <p class="muted">오늘 화면에서 지금 시간대의 습관이 맨 위에 와요. 업무 요일이 아닌 날에는 업무 시간이 없어요.</p>
+      <form id="routine-form" class="routine" novalidate>
+        <label class="time-field"><span>💼 업무 시작</span><input type="time" name="workStart" value="${clock(state.settings.workStart)}" required></label>
+        <label class="time-field"><span>💼 업무 끝</span><input type="time" name="workEnd" value="${clock(state.settings.workEnd)}" required></label>
+        <label class="time-field"><span>🌙 자기 전 시작</span><input type="time" name="nightStart" value="${clock(state.settings.nightStart)}" required></label>
+        <fieldset class="field">
+          <legend>업무 요일</legend>
+          <div class="seg cols-7">
+            ${WEEK_ORDER.map((d) => `
+              <label><input type="checkbox" name="workDays" value="${d}"${state.settings.workDays.includes(d) ? ' checked' : ''}><span>${WEEK_LABEL[d]}</span></label>`).join('')}
+          </div>
+        </fieldset>
+        <p class="form-error" role="alert" hidden></p>
+        <button type="submit" class="btn block">일과 저장</button>
+      </form>
+    </div>
+    <div class="card">
       <h2>백업</h2>
       <p class="muted">모든 데이터는 이 기기 안에만 저장돼요. 브라우저 데이터를 지우거나 기기를 바꾸면 사라지니, 가끔 파일로 내보내 두세요.</p>
       <div class="btn-row">
@@ -1236,9 +1311,12 @@ function enterDay() {
 
 /** 앱을 켜 둔 채로 하루 기준 시각을 지나면 새 날로 넘어간다. 날짜가 바뀌었으면 true. */
 function syncDay() {
-  if (today() === currentDay) return false;
-  enterDay();
-  return true;
+  if (today() !== currentDay) {
+    enterDay();
+    return true;
+  }
+  if (G.currentTime(state, now()).time !== currentTimeSlot) renderToday(); // 같은 날 안에서 시간대가 바뀌었다
+  return false;
 }
 
 const ACTIONS = {
@@ -1268,6 +1346,27 @@ function bindEvents() {
     if (tab) return switchTab(tab.dataset.tab);
     const el = e.target.closest('[data-action]');
     if (el) ACTIONS[el.dataset.action]?.(el);
+  });
+  document.addEventListener('submit', (e) => {
+    if (e.target.id !== 'routine-form') return;
+    e.preventDefault();
+    const data = new FormData(e.target);
+    try {
+      G.setRoutine(state, {
+        workStart: fromClock(data.get('workStart')),
+        workEnd: fromClock(data.get('workEnd')),
+        nightStart: fromClock(data.get('nightStart')),
+        workDays: data.getAll('workDays').map(Number),
+      });
+    } catch (err) {
+      const box = $('.form-error', e.target);
+      box.textContent = Number.isNaN(fromClock(data.get('workStart'))) ? '시각을 다시 확인해 주세요.' : err.message;
+      box.hidden = false;
+      return;
+    }
+    save();
+    renderAll();
+    toast('하루 일과를 저장했어요.');
   });
   document.addEventListener('change', (e) => {
     if (e.target.id !== 'day-start') return;

@@ -75,6 +75,18 @@ export const BASE_FEVER_PCT = 3; // 장신구가 없어도 공격할 때마다 3
 export const CHANCE_PER_HABIT = 1;
 export const CHANCE_PER_PERFECT_DAY = 1;
 
+// ───────── 하루 일과(시간대) ─────────
+// 습관마다 언제 할지(when)를 정해 두면, 오늘 화면에서 지금 시간대의 습관이 맨 위에 온다.
+export const TIMES = {
+  morning: { label: '아침', icon: '🌅' },
+  work: { label: '업무 시간', short: '업무', icon: '💼' },
+  evening: { label: '저녁', icon: '🌆' },
+  night: { label: '자기 전', icon: '🌙' },
+  any: { label: '언제나', icon: '⏰' },
+};
+export const TIME_ORDER = ['morning', 'work', 'evening', 'night']; // 하루 안에서 지나가는 순서
+const OFF_DAY_NOON = 12 * 60; // 쉬는 날에는 업무 시간 대신 정오까지를 아침으로 본다
+
 const HOUR_MS = 3600000;
 const DAY_MS = 86400000;
 
@@ -117,7 +129,16 @@ export const defaultGear = () => ({
 });
 // cleared: 깬 스테이지 수(다음에 싸울 스테이지는 cleared + 1). 그날 싸운 횟수는 날짜 기록(days[day].battles)에 둔다.
 export const defaultBattle = () => ({ cleared: 0, wins: 0, losses: 0 });
-export const defaultSettings = () => ({ dayStartHour: 4, debugOffsetMs: 0, lastBackupAt: null });
+// 업무 시간·자기 전 시작은 자정부터 센 분(예: 8:30 → 510). 업무 요일은 0 = 일요일.
+export const defaultSettings = () => ({
+  dayStartHour: 4,
+  workStart: 8 * 60 + 30,
+  workEnd: 17 * 60 + 30,
+  nightStart: 22 * 60,
+  workDays: [1, 2, 3, 4, 5],
+  debugOffsetMs: 0,
+  lastBackupAt: null,
+});
 
 export function createState() {
   return {
@@ -174,7 +195,9 @@ function cleanInput(input) {
   // 연결된 습관은 난이도를 바꾸면 이름(분량)도 따라 바뀐다.
   const linked = Object.hasOwn(SUGGESTIONS, input.templateId ?? '')
     && SUGGESTIONS[input.templateId].levels[input.difficulty].name === name;
-  return { name, difficulty: input.difficulty, category: input.category, days, templateId: linked ? input.templateId : null };
+  const when = input.when ?? 'any';
+  if (!Object.hasOwn(TIMES, when)) throw new Error('언제 할지 골라 주세요.');
+  return { name, difficulty: input.difficulty, category: input.category, days, when, templateId: linked ? input.templateId : null };
 }
 
 function setTemplate(habit, templateId) {
@@ -190,6 +213,7 @@ export function addHabit(state, input, nowMs) {
     name: c.name,
     difficulty: c.difficulty,
     category: c.category,
+    when: c.when,
     schedule: [{ from: day, days: c.days }],
     createdDay: day,
     order: input.order ?? nowMs,
@@ -208,6 +232,7 @@ export function updateHabit(state, id, input, nowMs) {
   habit.name = c.name;
   habit.difficulty = c.difficulty;
   habit.category = c.category;
+  habit.when = c.when;
   setTemplate(habit, c.templateId);
   if (c.days.join() !== currentDays(habit).join()) {
     const last = habit.schedule[habit.schedule.length - 1];
@@ -240,7 +265,7 @@ export function addSuggested(state, templateIds, difficulty, nowMs) {
     const s = SUGGESTIONS[id];
     if (!s || used.has(id)) continue;
     added.push(addHabit(state, {
-      name: s.levels[difficulty].name, difficulty, category: s.category, templateId: id, order: nowMs + added.length,
+      name: s.levels[difficulty].name, difficulty, category: s.category, when: s.when, templateId: id, order: nowMs + added.length,
     }, nowMs));
   }
   return added;
@@ -657,6 +682,72 @@ export function totals(state) {
     completions: Object.keys(state.completions).length,
     perfectDays: Object.values(state.days).filter((d) => d.perfect).length,
   };
+}
+
+// ───────── 하루 일과(시간대) ─────────
+
+/** 습관을 할 시간대. 시간대가 생기기 전에 만든 습관은 추천에서 왔으면 그 추천의 시간대, 아니면 '언제나' */
+export const habitWhen = (habit) => habit.when ?? SUGGESTIONS[habit.templateId]?.when ?? 'any';
+
+/** 하루 기준 시각부터 센 분. 새벽 4시가 기준이면 4:00 → 0, 3:59 → 1439 */
+const sinceDayStart = (state, minutes) => (minutes - state.settings.dayStartHour * 60 + 1440) % 1440;
+
+export const isWorkDay = (state, day) => state.settings.workDays.includes(weekdayOf(day));
+
+/**
+ * 지금이 어느 시간대인지. 업무 요일이 아닌 날에는 업무 시간이 없고, 그 사이는 'day'(낮)이다.
+ * @returns { day, time: 'morning'|'work'|'day'|'evening'|'night', workDay }
+ */
+export function currentTime(state, nowMs) {
+  const day = today(state, nowMs);
+  const d = new Date(nowMs);
+  const now = sinceDayStart(state, d.getHours() * 60 + d.getMinutes());
+  const s = state.settings;
+  const workDay = isWorkDay(state, day);
+  let time;
+  if (now >= sinceDayStart(state, s.nightStart)) time = 'night';
+  else if (now >= sinceDayStart(state, s.workEnd)) time = 'evening';
+  else if (workDay) time = now >= sinceDayStart(state, s.workStart) ? 'work' : 'morning';
+  else time = now >= sinceDayStart(state, OFF_DAY_NOON) ? 'day' : 'morning';
+  return { day, time, workDay };
+}
+
+/**
+ * 오늘 화면의 습관 순서. 지금 시간대 → 지나간 시간대(아직 안 함) → 이따가 → 완료 순으로 묶는다.
+ * '언제나' 습관은 언제 봐도 '지금'에 들어간다. 쉬는 날의 업무 시간 습관은 '이따가'가 아니라 '지금'에 둔다.
+ */
+export function todayGroups(state, nowMs) {
+  const { day, time, workDay } = currentTime(state, nowMs);
+  const { habits } = daySummary(state, day);
+  // 쉬는 날 낮에는 업무 시간이 없으므로 아침이 지나간 것으로만 본다
+  const pos = time === 'day' ? 1.5 : TIME_ORDER.indexOf(time);
+  const groups = { now: [], missed: [], later: [], done: [] };
+  for (const h of habits) {
+    const when = habitWhen(h);
+    if (isDone(state, h.id, day)) groups.done.push(h);
+    else if (when === 'any' || when === time || (when === 'work' && !workDay)) groups.now.push(h);
+    else if (TIME_ORDER.indexOf(when) < pos) groups.missed.push(h);
+    else groups.later.push(h);
+  }
+  const rank = (h) => (habitWhen(h) === time ? 0 : 1); // 지금 시간대에 맞춘 습관을 '언제나'보다 위에
+  groups.now.sort((a, b) => rank(a) - rank(b));
+  groups.later.sort((a, b) => TIME_ORDER.indexOf(habitWhen(a)) - TIME_ORDER.indexOf(habitWhen(b)));
+  return { day, time, workDay, groups };
+}
+
+/** 지금 시간대에 어울리는 추천 (이미 담은 것 포함). 쉬는 날 낮에는 '언제나' 성격의 추천만 */
+export const suggestionsFor = (time) => Object.values(SUGGESTIONS).filter((s) => s.when === time);
+
+/** 하루 일과 설정을 바꾼다. 시각은 자정부터 센 분. 하루 기준 시각부터 순서대로여야 한다. */
+export function setRoutine(state, { workStart, workEnd, nightStart, workDays }) {
+  const ok = (m) => Number.isInteger(m) && m >= 0 && m < 1440;
+  if (![workStart, workEnd, nightStart].every(ok)) throw new Error('시각을 다시 확인해 주세요.');
+  const [a, b, c] = [workStart, workEnd, nightStart].map((m) => sinceDayStart(state, m));
+  if (!(a < b)) throw new Error('업무 끝 시각은 시작보다 늦어야 해요.');
+  if (!(b <= c)) throw new Error('자기 전 시작은 업무가 끝난 뒤여야 해요.');
+  const days = [...new Set(workDays)].filter((d) => ALL_DAYS.includes(d)).sort();
+  Object.assign(state.settings, { workStart, workEnd, nightStart, workDays: days });
+  markSettings(state);
 }
 
 // ───────── 설정 ─────────

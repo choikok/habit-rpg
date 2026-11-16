@@ -49,6 +49,7 @@ npm run test:e2e
 ```
 
 `npm test` 는 규칙 계산(Node만 있으면 됨), `test:e2e` 는 실제 브라우저 시험(Playwright 필요)입니다.
+브라우저 시험 일부만 돌리려면 `E2E_ONLY='8단계'`, 실패 내용을 전부 보려면 `E2E_VERBOSE=1` 을 앞에 붙입니다.
 
 ## 파일
 

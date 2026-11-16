@@ -112,7 +112,7 @@ test('백업: 파일에는 앱 이름·버전·내보낸 시각이 들어가고,
   assert.equal(data.app, 'habit-rpg');
   assert.equal(data.version, 2);
   assert.equal(data.exportedAt, new Date(NOV(20, 12)).toISOString());
-  assert.deepEqual(data.settings, { dayStartHour: 4 });
+  assert.deepEqual(data.settings, { dayStartHour: 4, workStart: 510, workEnd: 1050, nightStart: 1320, workDays: [1, 2, 3, 4, 5] });
   assert.equal(importData(JSON.stringify(data)).settings.debugOffsetMs, 0);
 });
 
